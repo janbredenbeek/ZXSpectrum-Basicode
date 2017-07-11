@@ -5,6 +5,21 @@
 ; BEXT SECTION 2
 ; v2.02; 24 NOVEMBER 1987
 
+; This code is largely based on the ZX Spectrum ROM's BASIC, which is copyrighted by Amstrad.
+; However, the Spectrum's ROM has been extensively documented in various disassemblies, starting with
+; "The Complete Spectrum ROM Disassembly" by Ian Logan and Frank O'Hara (Melbourne House, 1983).
+; This disassembly has been the basis of my Basicode EXTension to create an alternative interpreter
+; for running BASICODE programs. Code has been copied and modified for BASICODE compatibility while
+; at the same time calls and jumps to the ROM code are used as much as possible to save space.
+; This means that the presence of the 48K Spectrum's ROM is essential for proper operation.
+; It would of course be very challenging to make the Spectrum ROM's BASIC itself BASICODE compatible
+; so we could save a lot of duplicated code in RAM and avoid the dirty tricks necessary to trap the
+; notorious attempts by many hardware extensions (including Sinclair's Interface 1) to switch back to
+; the original ROM BASIC when using their 'extended' commands. On a standalone (possibly emulated)
+; 48K Spectrum this might be a viable option, however it would render a lot of hard- and software
+; useless since they depend onto a large degree upon fixed addresses in the Spectrum ROM.
+; But in these days of emulators where you can switch ROMs with a few clicks, it might be worth a try...
+
 ; Table containing token codes for modified commands
 
 EXT_OF DEFB   #F3,P_NEXT-$
