@@ -5,6 +5,19 @@
 ; 42-COLUMN SCREEN DRIVER VERSION 1.6
 ; Last revision: 24 november 1987
 
+; This code is largely based on the ZX Spectrum ROM, which is copyrighted by Amstrad.
+; However, the Spectrum's ROM has been extensively documented in various disassemblies, starting with
+; "The Complete Spectrum ROM Disassembly" by Ian Logan and Frank O'Hara (Melbourne House, 1983).
+; This disassembly has been the basis of my driver which supports a 42-column screen for use
+; with BASICODE programs. Code has been copied and modified for BASICODE compatibility while
+; at the same time calls and jumps to the ROM code are used as much as possible to save space.
+; This means that the presence of the 48K Spectrum's ROM is essential for proper operation.
+; It would of course be very challenging to make the Spectrum ROM itself BASICODE compatible
+; so we could save a lot of duplicated code in RAM. On a standalone (possibly emulated)
+; 48K Spectrum this might be a viable option, however it would render a lot of hard- and software
+; useless since they depend onto a large degree upon fixed addresses in the Spectrum ROM.
+; But in these days of emulators where you can switch ROMs with a few clicks, it might be worth a try...
+
 CHARS  EQU    58072           ; character set (needs to be 8-byte aligned!)
 
        ORG    56790
