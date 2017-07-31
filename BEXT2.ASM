@@ -2239,12 +2239,30 @@ D_SZ   POP    BC
        JP     Z,DIM_1
        RET
 
+; Interrupt service front-end
+; This is a bodge which re-activates our interpreter after it has been disabled
+; (usually after a command processed by an external ROM, e.g. Interface 1 or other
+; storage system). These systems have the habit of jumping back to the Spectrum
+; ROM's main loop, thereby disabling our interpreter.
+; When this happens, the Spectrum ROM's editor is eventually entered and will wait
+; for a key to be pressed. At this point, we'll intercept the return address at 
+; $0F3B (ED_LOOP+3) and replace it with our equivalent. We'll do the same with
+; ED_ERROR and MAIN_3 so when the call to WAIT_KEY at ED_LOOP returns we are back
+; in control. A nice piece of ROP back in the '80s!
+; To make this work, an interrupt vector table has been set up at locations
+; $FE00-$FF00 (inclusive!) with 257 bytes holding $FD and the Z80 put in interrupt
+; mode (IM) 2. In this mode, it will read the address to be jumped to from the I
+; register (high byte) and a byte put on the data bus when the interrupt occurs.
+; The latter byte is usually $FF but to be on the safe side we'll use a whole page
+; of precious RAM. The Z80 will then jump to $FDFD which contains a JP to the code
+; below.
+
 INTSRV PUSH   AF
-       LD     A,(0)
-       CP     #F3
+       LD     A,(0)         ; check first byte of ROM
+       CP     #F3           ; it is F3 with Spectrum ROM paged in
        JR     NZ,INTEND
        PUSH   HL
-       LD     HL,(23613)
+       LD     HL,(23613)    ; ERR_SP
        DEC    HL
        LD     A,(HL)
        CP     #0F
@@ -2273,15 +2291,29 @@ INTSRV PUSH   AF
        POP    DE
 NO_ED  POP    HL
 INTEND POP    AF
-       JP     #0038
+       JP     #0038         ; go to ROM handler's code
 
+; The interrupt vector itself
 
        ORG    #FDFD
        JP     INTSRV
 
+; locations $FE00-$FF00 inclusive hold the interrupt vector $FDFD
+; (see above for explanation)
+
+; locations $FF01-$FF40 hold a table used by FN EOF
+; For each of the 16 available streams:
+; - byte 00: flag; 00=no pending input, $FF pending input
+; - byte 01: byte pending to be read next
+; - bytes 02-03: address of original input subroutine
+
+; A message from the author: v2.02, built at 8 June 1987.
+
        ORG    #FF41
        DEFM   " 2.02  080687  JB "
 
+; Two variables
+
        ORG    65365
-       DEFW   1000
-BRKFLG DEFB   0
+       DEFW   1000          ; Start line# of BASICODE program
+BRKFLG DEFB   0             ; 0: Break enabled, <>0 disabled
