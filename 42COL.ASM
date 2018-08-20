@@ -635,81 +635,96 @@ PR6    EX     AF,AF'          ; Save counter and flag
        RET                    ; Done
 
 ; The SCROLL routine
+; The current line is full and scrolling might be needed. But first, do some
+; checks.
 
-SCROLL BIT    1,(IY+1)
-       RET    NZ
-       LD     A,(DF_SZ)
-       CP     B
-       JR     NZ,CL_SET
-SCR2   DEC    (IY+82)
-       JR     NZ,SCR3
+SCROLL BIT    1,(IY+1)        ; ZX Printer being used?
+       RET    NZ              ; Yes, return immediately
+       LD     A,(DF_SZ)       ; Get number of lines in lower screen section
+       CP     B               ; Compare against current row position
+       JR     NZ,CL_SET       ; No scroll needed, exit via CL_SET
+SCR2   DEC    (IY+82)         ; Decrease scroll counter
+       JR     NZ,SCR3         ; Scroll unless it has reached zero
        LD     A,#18
-       SUB    B
-       LD     (23692),A
-       LD     A,(SCFLAG)
+       SUB    B               ; Find number of rows in upper screen section
+       LD     (23692),A       ; And reset scroll counter
+       LD     A,(SCFLAG)      ; Is 'scroll?' prompt enabled?
        AND    A
-       JR     Z,SCR3
+       JR     Z,SCR3          ; Jump if not
        LD     A,#FD
-       CALL   #1601
-       RES    5,(IY+2)
-       LD     A,(DF_SZ)
-       CP     (IY+49)
-       JR     C,NO_MSG
-       SET    5,(IY+2)
+       CALL   #1601           ; Select stream 'K'
+       RES    5,(IY+2)        ; Signal 'do not clear lower screen section'
+       LD     A,(DF_SZ)       ; Now compare 'our' DF_SZ against the ROM's one
+       CP     (IY+49)         ; ... to see if we can display the message
+       JR     C,NO_MSG        ; no, not enough lines...
+       SET    5,(IY+2)        ; else, signal 'clear lower screen afterwards'
        XOR    A
-       LD     DE,#0CF8
-       CALL   #0C0A
-NO_MSG LD     HL,#5C3B
-       SET    3,(HL)
-       RES    5,(HL)
-       EXX
-       CALL   #15DE
-       EXX
-       CP     #20
+       LD     DE,#0CF8        ; The 'scroll?' message
+       CALL   #0C0A           ; ... and print it!
+NO_MSG LD     HL,#5C3B        ; Point at FLAGS
+       SET    3,(HL)          ; Signal 'L' mode
+       RES    5,(HL)          ; Clear any previous key stroke
+       EXX                    ; Switch regs as we call recursively
+       CALL   #15DE           ; Call WAIT_KEY1
+       EXX                    ; Switch regs back
+       CP     #20             ; Consider key pressed - 'space' means 'break'
        JR     Z,SC_BRK
-       CP     #E2
+       CP     #E2             ; ... And so means 'STOP'
        JR     Z,SC_BRK
        OR     #20
-       CP     #6E
-SC_BRK JP     Z,#0D00
+       CP     #6E             ; ... And 'n' or 'N'.
+SC_BRK JP     Z,#0D00         ; Jump to signal REPORT-D
        LD     A,#02
-       CALL   #1601
-SCR3   CALL   #0DFE
-       LD     A,(DF_SZ)
+       CALL   #1601           ; Re-open stream 02 ('S')
+SCR3   CALL   #0DFE           ; Perform the actual scrolling
+       LD     A,(DF_SZ)       ; Get number of rows in lower screen section
        INC    A
-       LD     B,A
-       LD     C,43
-       DEC    A
-       CALL   NZ,#0CDB
-CL_SET LD     HL,#5B00
-       BIT    1,(IY+1)
-       JR     NZ,CL_S2
-CL_S1  PUSH   BC
-       CALL   #0E9B
-       POP    BC
-CL_S2  LD     A,43
-       SUB    C
-       LD     E,A
-       ADD    A,A
-       ADD    A,E
-       RRA
-       AND    A
-       RRA
-       OR     L
-       LD     L,A
-       JP     L0ADC
+       LD     B,A             ; Add 1 and use this as new row position
+       LD     C,43            ; Set column to left edge
+       DEC    A               ; Test A against zero
+       CALL   NZ,#0CDB        ; if nonzero, reset attributes for bottom line
 
-SUB200 LD     BC,#0000
-       LD     HL,#5C3B
-       SET    3,(HL)
-       BIT    5,(HL)
-       RET    Z
-       LD     A,(23560)
-       RES    5,(HL)
-       CALL   K_TEST
-       LD     C,A
-       RET    C
-       LD     C,#00
+; The CL_SET routine calculates the address in the display or printer buffer
+; based on the line and column in the BC register. Since we have to consider a
+; 42-column display, our code is a bit different from the equivalent ROM code.
+
+CL_SET LD     HL,#5B00        ; Start of printer buffer
+       BIT    1,(IY+1)        ; Really using ZX Printer?
+       JR     NZ,CL_S2        ; Yes, jump forward
+CL_S1  PUSH   BC              ; Else, call CL_ADDR in the ROM to get the
+       CALL   #0E9B           ; start address in the display file of the
+       POP    BC              ; current line
+CL_S2  LD     A,43
+       SUB    C               ; Get 43-column position in A.
+       LD     E,A             ; Copy to E
+       ADD    A,A             ; Now A = 2 * (43-column)
+       ADD    A,E             ; ... And now 3 * (43-column)
+       RRA                    ; Since each column occupies 6 bits, every 4
+       AND    A               ; columns occupy exactly 3 bytes - so dividing A
+       RRA                    ; by 4 gives us the right byte position
+       OR     L               ; within the row - transfer this to L.
+       LD     L,A
+       JP     L0ADC           ; Exit, storing the new position.
+
+; The 'GOSUB 200' or 'get key currently depressed' routine
+; This returns the code of the key currently being depressed in BC.
+; It also caters for special BASICODE codes (1CH-1FH, 7FH) and characters like
+; [ \ ] { | } ~ which are only available in E-mode on the Spectrum's keyboard.
+; Now you can just press Symbol Shift and the corresponding key to get these
+; characters. Unlike INKEY$, which returns token codes that would be somewhat
+; confusing for BASICODE programs!
+
+SUB200 LD     BC,#0000        ; Pre-load BC with 0 for 'no key depressed'
+       LD     HL,#5C3B        ; Point to FLAGS
+       SET    3,(HL)          ; Signal 'L mode'
+       BIT    5,(HL)          ; Is a key being depressed?
+       RET    Z               ; If not, return with BC = 0
+       LD     A,(23560)       ; Get key code
+       RES    5,(HL)          ; Signal 'got key'
+       CALL   K_TEST          ; Test and if necessary convert the code to
+       LD     C,A             ; something sensible; copy this to BC
+       RET    C               ; Return if the code is acceptable
+       LD     C,#00           ; Else, set BC to zero and return.
        RET
 
 PAUSE  CALL   #1E99
