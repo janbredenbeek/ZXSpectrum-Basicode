@@ -727,29 +727,42 @@ SUB200 LD     BC,#0000        ; Pre-load BC with 0 for 'no key depressed'
        LD     C,#00           ; Else, set BC to zero and return.
        RET
 
-PAUSE  CALL   #1E99
-       SET    3,(IY+1)
-PAUSE1 HALT
+; The 'GOSUB 450' routine (wait specified time or until a key is pressed)
+; BASIC code: LET SD=(SD*5+USR 56796)/5: LET IN=PEEK 23560
+; where SD = time (*100ms) to wait, IN = code of key pressed
+; Routine fetches SD*5 (number of 20 ms frames) from the calculator stack
+; and pushes back the remaining number of frames. Since it always returns zero
+; in BC, SD will be assigned the remaining time (*100ms).
+; Returns with code of key pressed in LAST_K (or zero).
+       
+PAUSE  CALL   #1E99           ; Number of frames from calculator stack to BC
+       SET    3,(IY+1)        ; Signal 'L mode'
+
+; Now enter a loop to count down
+
+PAUSE1 HALT                   ; Wait for next frame interrupt
        LD     A,B
        OR     C
-       JR     Z,PAUSE2
-       DEC    BC
-       BIT    5,(IY+1)
-       JR     Z,PAUSE1
-PAUSE2 CALL   #2D2B
-       LD     A,(23560)
-       LD     BC,#0000
-       LD     (IY-50),C
-       BIT    5,(IY+1)
-       RET    Z
-       RES    5,(IY+1)
-       CALL   K_TEST
-       LD     C,#00
-       RET    NC
-       LD     (23560),A
-       RET
+       JR     Z,PAUSE2        ; Jump if BC has reached zero
+       DEC    BC              ; Else, count down
+       BIT    5,(IY+1)        ; Has a key been pressed?
+       JR     Z,PAUSE1        ; Loop back as long as there hasn't
+PAUSE2 CALL   #2D2B           ; Re-stack remaining time in BC
+       LD     A,(23560)       ; Get key code from LAST_K
+       LD     BC,#0000        ; Pre-load BC with zero
+       LD     (IY-50),C       ; Clear the key code
+       BIT    5,(IY+1)        ; Test (again) the flag
+       RET    Z               ; Return with BC=0 if no key pressed
+       RES    5,(IY+1)        ; Reset the flag
+       CALL   K_TEST          ; Test if the key code is acceptable
+       LD     C,#00           ; Reset C register to zero
+       RET    NC              ; Return if no acceptable key code
+       LD     (23560),A       ; Else, store key code in LAST_K
+       RET                    ; Finished (note: BC always 0)
 
-; Input routine
+; The Input routine for channel #2
+; This is used by GOSUB 210 which waits for a key to be pressed.
+; A flashing cursor is printed before and unprinted afterwards.
 
 GETKEY LD     A,(23697)
        LD     (TEMP_P),A
