@@ -30,7 +30,7 @@ S_POSN DEFW   #182B           ; 24-row number, 43-line number of cursor position
 DF_CC  DEFW   #4000           ; address in display file
 DF_SZ  DEFB   #00             ; number of rows in lower display window
 SCFLAG DEFB   #FF             ; 'scroll?' prompt flag
-TEMP_P DEFB   #00
+TEMP_P DEFB   #00             ; Temporary save location for P_FLAG
 BL_CT  DEFB   #00             ; counter for blinking cursor
        DEFM   "(C) 1984 J. Bredenbeek 1.6" ; a short message from the author
 
@@ -764,64 +764,77 @@ PAUSE2 CALL   #2D2B           ; Re-stack remaining time in BC
 ; This is used by GOSUB 210 which waits for a key to be pressed.
 ; A flashing cursor is printed before and unprinted afterwards.
 
-GETKEY LD     A,(23697)
-       LD     (TEMP_P),A
-       RES    7,(IY+2)
-       LD     HL,#5C3B
-       SET    3,(HL)
-       BIT    5,(HL)
-       JR     Z,K_WAIT
-K_FETC LD     A,(23560)
-       RES    5,(IY+1)
-       PUSH   AF
+GETKEY LD     A,(23697)       ; Get P_FLAG
+       LD     (TEMP_P),A      ; and save it temporarily
+       RES    7,(IY+2)        ; Spare bit of TV_FLAG used as cursor flash status
+       LD     HL,#5C3B        ; Point to FLAGS
+       SET    3,(HL)          ; Signal 'L' mode
+       BIT    5,(HL)          ; Has a key been pressed?
+       JR     Z,K_WAIT        ; No, jump
+K_FETC LD     A,(23560)       ; Fetch key code
+       RES    5,(IY+1)        ; Clear flag
+       PUSH   AF              ; Save code
        LD     D,0
-       LD     E,(IY-1)
-       LD     HL,#00C8
-       CALL   #03B5
-       BIT    7,(IY+2)
-       RES    7,(IY+2)
-       JR     Z,RSTOR_P
-       LD     A,#20
+       LD     E,(IY-1)        ; Load DE with value of PIP
+       LD     HL,#00C8        ; The pitch
+       CALL   #03B5           ; Now call BEEPER to give audible feedback
+       BIT    7,(IY+2)        ; Was the cursor visible?
+       RES    7,(IY+2)        ; Clear flag anyway
+       JR     Z,RSTOR_P       ; Skip if not
+       LD     A,#20           ; Now 'unprint' the cursor
        CALL   OUTCHR
-       LD     A,28
+       LD     A,28            ; ..and go back one character
        CALL   OUTCHR
-RSTOR_ LD     A,(TEMP_P)
+RSTOR_ LD     A,(TEMP_P)      ; Restore P_FLAG
        LD     (23697),A
-       POP    AF
-K_TEST LD     C,A
-       LD     HL,K_TAB
-       CALL   #16DC
-       LD     A,(HL)
-       RET    C
-       LD     A,C
-       CP     #20
-       CCF
-       RET    C
-       CP     #06
-       JR     NZ,NO_KEY
-       LD     A,(23658)
+       POP    AF              ; Retrieve key code
+
+; The following routine checks if the key pressed is acceptable to BASICODE.
+; If necessary, control codes are converted to their BASICODE counterparts.
+; The carry flag is returned set if the code is acceptable (either BASICODE
+; control codes 0Dh, 1CH to 1FH or ASCII codes 20H-7EH.
+; The routine also replaces the token codes on the keys Y, U, A, S, D, F and G
+; which are obtained in conjunction with Symbol Shift with their corresponding
+; ASCII characters [ ] ~ | \ { }, avoiding the need to use E-mode.
+
+K_TEST LD     C,A             ; Copy the code from A to C
+       LD     HL,K_TAB        ; Base of substitution table
+       CALL   #16DC           ; Call the INDEXER routine to look up the code
+       LD     A,(HL)          ; Fetch any substitution code
+       RET    C               ; Return this code if found in the table
+       LD     A,C             ; Else, restore code to A
+       CP     #20             ; Is it a 'printable' ASCII code?
+       CCF                    ; This inverts the carry flag
+       RET    C               ; Return carry flag set if printable ASCII code
+       CP     #06             ; Test against code for CAPS LOCK
+       JR     NZ,NO_KEY       ; Skip if not CAPS LOCK
+       LD     A,(23658)       ; Else, invert bit 3 of FLAGS2
        XOR    #08
        LD     (23658),A
-NO_KEY CP     A
-       RET
-K_TAB  DEFB   #08,28
-       DEFB   #09,29
-       DEFB   #0A,30
-       DEFB   #0B,31
-       DEFB   #0C,#7F
-       DEFB   #0D,#0D
-       DEFB   #AC,"?"
-       DEFB   #C3,"|"
-       DEFB   #C5,"]"
-       DEFB   #C6,"["
-       DEFB   #C7,"?"
-       DEFB   #C8,"?"
-       DEFB   #C9,"?"
-       DEFB   #CB,"}"
-       DEFB   #CC,"{"
-       DEFB   #CD,"\"
-       DEFB   #E2,"~"
-       DEFB   #00
+NO_KEY CP     A               ; No acceptable code found, return zero flag set
+       RET                    ; and carry reset
+
+; The following table contains entries in the form
+; first byte: original code, second byte: substitution code
+
+K_TAB  DEFB   #08,28          ; Cursor left
+       DEFB   #09,29          ; Cursor right
+       DEFB   #0A,30          ; Cursor down
+       DEFB   #0B,31          ; Cursor up
+       DEFB   #0C,#7F         ; Delete
+       DEFB   #0D,#0D         ; ENTER
+       DEFB   #AC,"?"         ; AT - replaced by '?'
+       DEFB   #C3,"|"         ; NOT - replaced by '|'
+       DEFB   #C5,"]"         ; OR - replaced by ']'
+       DEFB   #C6,"["         ; AND - replaced by '['
+       DEFB   #C7,"?"         ; '<=' - replaced by '?'
+       DEFB   #C8,"?"         ; '>=' - replaced by '?'
+       DEFB   #C9,"?"         ; '<>' - replaced by '?'
+       DEFB   #CB,"}"         ; THEN - replaced by '}'
+       DEFB   #CC,"{"         ; TO - replaced by '{'
+       DEFB   #CD,"\"         ; STEP - replaced by '\'
+       DEFB   #E2,"~"         ; STOP - replaced by '~'
+       DEFB   #00             ; End marker
 
 ; wait for key input, flashing cursor in #2       
        
