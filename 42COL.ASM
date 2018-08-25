@@ -25,7 +25,9 @@ CHARS  EQU    58072           ; character set (needs to be 8-byte aligned!)
        JP     SUB200          ; get a key currently depressed
        JP     PAUSE           ; wait for a key
        JP     PRTSTR          ; plot a string in the graphics coordinate system
-       
+
+; Variable storage - the first three mimic the ROM's system variables
+
 S_POSN DEFW   #182B           ; 24-row number, 43-line number of cursor position
 DF_CC  DEFW   #4000           ; address in display file
 DF_SZ  DEFB   #00             ; number of rows in lower display window
@@ -53,7 +55,7 @@ INIT   LD     HL,(23635)
        LD     (23578),HL      ; and enter it into channel pointer for #2
        LD     A,#03
        CALL   #1601           ; select #3 (printer channel)
-       LD     HL,(23633)
+       LD     HL,(23633)      ; Get pointer from CURCHL
        LD     E,(HL)
        INC    HL
        LD     D,(HL)
@@ -69,6 +71,11 @@ INIT   LD     HL,(23635)
        LD     (HL),E
 I_END  LD     A,#02           ; re-select channel #2
        JP     #1601
+
+; Channel data for our new 'S' channel
+; This is copied to the end of the existing CHANS area and then linked to #2
+; We cannot just overwrite the existing 'S' channel entry as the pointer to the
+; output routine gets reset every time a CLS is issued!
 
        DEFW   OUTCHR          ; our output routine
        DEFW   GETKEY          ; our input routine
@@ -838,28 +845,31 @@ K_TAB  DEFB   #08,28          ; Cursor left
 
 ; wait for key input, flashing cursor in #2       
        
-K_WAIT LD     HL,23697
+K_WAIT LD     HL,23697        ; P_FLAG
        LD     A,(HL)
-       LD     (TEMP_P),A
-       SET    2,(HL)
-       SET    0,(HL)
-K_CURS LD     A,13
-       LD     (BL_CT),A
-       LD     A,#20
+       LD     (TEMP_P),A      ; Save P_FLAG temporarily
+       SET    2,(HL)          ; Signal 'INVERSE 1'
+       SET    0,(HL)          ; Signal 'OVER 1'
+
+; Now enter a loop for the blinking cursor
+
+K_CURS LD     A,13            ; Blinking frequency - 13/50th of a second
+       LD     (BL_CT),A       ; Reset blink counter
+       LD     A,#20           ; Print the cursor - in fact an inverted Space
        CALL   OUTCHR
-       LD     A,28
+       LD     A,28            ; And move the print position back again
        CALL   OUTCHR
-       LD     A,(23612)
-       XOR    #80
-       LD     (23612),A
-K_HALT HALT
-       BIT    5,(IY+1)
-       JP     NZ,K_FETCH
-       LD     A,(BL_CT)
+       LD     A,(23612)       ; Use bit 7 of TVFLAG to signal cursor
+       XOR    #80             ; visibility - invert this bit on each pass
+       LD     (23612),A       ; (rather nasty - but I got away with it :))
+K_HALT HALT                   ; Wait 1/50th second
+       BIT    5,(IY+1)        ; Has a key been pressed?
+       JP     NZ,K_FETCH      ; If yes, jump out of the loop
+       LD     A,(BL_CT)       ; Else, decrement blink counter
        DEC    A
        LD     (BL_CT),A
-       JR     NZ,K_HALT
-       JR     K_CURS
+       JR     NZ,K_HALT       ; If nonzero, wait another 1/50th second
+       JR     K_CURS          ; Else, flash the cursor first and loop back
        
 ; Plot a string in the graphics coordinate system
 ; Called by GOSUB 650
@@ -889,7 +899,7 @@ STR_LP LD     A,B
        LD     A,C
        ADD    A,6
        LD     (23677),A       ; advance by 6 pixels (NOTE: no overflow check)
-       LD     A,#BF           ; our graphic screen has 191 lines not 175.
+       LD     A,#BF           ; our graphic screen has 192 lines not 176.
        SUB    B
        CALL   #22B0           ; get start address in display file
        INC    A
@@ -962,3 +972,5 @@ PG_NXT POP    DE              ; restore character set pointer
 ; One question which needs to be solved: should we set only one attribute row
 ; (and which one?) or go for two rows? In both cases the result may not look
 ; quite as we want it to...
+
+; END OF 42COL.ASM
