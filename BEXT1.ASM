@@ -55,38 +55,51 @@ FN_D$  LD     HL,6            ; Point to result flag on the stack
 ; FN o() enters here. Note that the original names were FN d() and FN d$() but
 ; in 1987 the BASICODE Foundation decided to 'legalise' DEFFN so the name had 
 ; to be changed to a 'reserved' one!
+; This code looks for a return address of $289F in the ROM, which is just after
+; the recursive call to SCANNING in the ROM (at $24FB) which evaluates the
+; FN's result. If found, this address is replaced with the equivalent address
+; in our BASICODE interpreter.
        
-FN_D   LD     HL,12
+FN_D   LD     HL,12           ; Point to return address
        ADD    HL,SP
-       LD     BC,0
+       LD     BC,0            ; Zero result required for USR
        LD     A,(HL)
-       CP     #9F
-       RET    NZ
+       CP     #9F             ; Is low byte $9F?
+       RET    NZ              ; Return if not
        INC    HL
        LD     A,(HL)
-       CP     #28
-       RET    NZ
-       LD     DE,SCANRT
-       LD     (HL),D
+       CP     #28             ; Is high byte $28?
+       RET    NZ              ; Return if not
+       LD     DE,SCANRT       ; Else, replace with SCANRT in our expression
+       LD     (HL),D          ; evaluator
        DEC    HL
        LD     (HL),E
-       LD     HL,1
+       LD     HL,1            ; Set NEWPPC to 1
        LD     (23618),HL
        RET
+
+; The return point; restore CH_ADD and DEFADD and jump to S-CONT-2
+
 SCANRT POP    HL
        LD     (23645),HL
        POP    HL
        LD     (23563),HL
        RST    #20
        JP     CONT2
-EXTVEC DEFW   53959
-ERRPPC DEFW   #0000
-PPC    DEFW   #0000
-SUBPPC DEFB   #00
-STRS   DEFW   #0000
-STRPTR DEFW   #0000
+
+; Variables
+
+EXTVEC DEFW   53959           ; Address of routine to call on '*' command
+ERRPPC DEFW   #0000           ; 'ON ERROR GOTO' line number
+PPC    DEFW   #0000           ; Temporary save area for PPC system variable
+SUBPPC DEFB   #00             ; Id. for SUBPPC
+STRS   DEFW   #0000           ; Start of string space
+STRPTR DEFW   #0000           ; Pointer to first used string space
 
 ; SAVE, LOAD, VERIFY & MERGE
+; This code mimics the ROM, except:
+; - SAVE etc. does not save the variables of a BASIC program
+; - SAVE etc... DATA is not supported
 
 SAVE_ETC
        POP    BC
@@ -382,47 +395,64 @@ ME_E1  PUSH   DE
        INC    BC
        JP     #0943
 
-RE_TES CP     #CF
-       RET    C
-       CP     #D5
-       JR     C,SET_PPC
-       CP     #FB
-       RET    NZ
-SET_PPC
-       LD     HL,(23613)
-       LD     (HL),#03
-       INC    HL
-       LD     (HL),#13
-       LD     HL,(23621)
-       PUSH   AF
-       LD     A,(23623)
-       INC    A
-       LD     (PPC),HL
-       LD     (SUBPPC),A
-       POP    AF
-       LD     HL,#0001
-       LD     D,#02
-       JP     #1E73
+; Test for commands requiring 're-entry' from the ROM's interpreter
 
-RE_ENT LD     HL,(23613)
-       LD     DE,MAIN_4
+RE_TES CP     #CF             ; Code for CAT
+       RET    C               ; Exclude lower codes
+       CP     #D5             ; This includes CAT, FORMAT, MOVE, ERASE,
+       JR     C,SET_PPC       ; OPEN # and CLOSE #
+       CP     #FB             ; Include CLS
+       RET    NZ
+
+; -----------------------------------------------------------------------------
+; A command from an expansion unit such as Interface-1 or a disk interface is
+; to be executed. This requires special care as these hardware usually don't
+; know about BASICODE and hook into the ROM's interpreter entry points. So we
+; would end up with the old Spectrum's BASIC after execution of these commands.
+; To force a re-entry of the BASICODE interpreter, we'll set NEWPPC and NSPPC
+; to line 1 and statement 2. Line 1 reads 'REM: RANDOMIZE USR VAL "59453" which
+; jumps to the RE_ENT code below which re-activates our interpreter.
+; -----------------------------------------------------------------------------
+
+SET_PPC
+       LD     HL,(23613)      ; ERR_SP
+       LD     (HL),#03        ; Restore the ROM's error handler
+       INC    HL              ; (if any error occurs, the interrupt service
+       LD     (HL),#13        ; code will deal with re-entry)
+       LD     HL,(23621)      ; PPC
+       PUSH   AF              ; Save A
+       LD     A,(23623)       ; Get SUBPPC
+       INC    A               ; The program is to be continued at next stmt
+       LD     (PPC),HL        ; Save PPC
+       LD     (SUBPPC),A      ; .. and SUBPPC
+       POP    AF              ; Restore A
+       LD     HL,#0001        ; The return point is to be line 1 statement 2
+       LD     D,#02
+       JP     #1E73           ; Exit to GO TO to set NEWPPC and NSPPC
+
+; The re-entry point from the RANDOMIZE USR 59453 at line 1:2
+
+RE_ENT LD     HL,(23613)      
+       LD     DE,MAIN_4       ; Reset error handler to our MAIN_4
        LD     (HL),E
        INC    HL
        LD     (HL),D
        DEC    HL
-       LD     DE,STMT_RET
+       LD     DE,STMT_RET     ; and return address to our STMT_RET
        DEC    HL
        LD     (HL),D
        DEC    HL
        LD     (HL),E
        LD     HL,(PPC)
        LD     A,(SUBPPC)
-       LD     (23618),HL
-       LD     (23620),A
-       LD     BC,(23670)
+       LD     (23618),HL      ; Set NEWPPC and NSPPC to line and statement
+       LD     (23620),A       ; where program is to be continued
+       LD     BC,(23670)      ; SEED will be preserved by the RANDOMIZE
        RET
 
-; Initialisation routine
+; ==============================
+; The initialisation entry point
+; ==============================
 
 INIT   CALL   PROGADAPT
        LD     SP,(23613)
