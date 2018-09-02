@@ -452,22 +452,58 @@ RE_ENT LD     HL,(23613)
 
 ; ==============================
 ; The initialisation entry point
+; This is where it all starts!
 ; ==============================
 
-INIT   CALL   PROGADAPT
-       LD     SP,(23613)
-       POP    HL
-       LD     HL,MAIN_4
+INIT   CALL   PROGADAPT       ; Remove variables and embedded FP from program
+       LD     SP,(23613)      ; Reclaim stack space
+       POP    HL              ; The old error handler
+       LD     HL,MAIN_4       ; .. which will be replaced by our own
+       PUSH   HL              
+       LD     HL,STMT_RET     ; And push our own STMT_RET back
        PUSH   HL
-       LD     HL,STMT_RET
-       PUSH   HL
-       LD     A,#FE
-       LD     I,A
-       IM     2
-       LD     HL,(23730)
-       PUSH   HL
-       LD     HL,100
-       JP     CLR_2
+
+; We now have control of the system. However, this doesn't mean that we'll
+; always keep it. Many extension ROMs, including Sinclair's Interface 1,
+; work by trapping errors from 'extended' BASIC commands which the main
+; interpreter sees as invalid (e.g. SAVE *"m" etc that deliberately generates a
+; syntax error, which pages in IF1's shadow rom at address 0008). The problem
+; is that this shadow ROM, once it has done its job, hooks back into the main
+; ROM's interpreter loop, thereby disabling our BASICODE interpreter!
+; There are various ways to thwart this; the original version of BASICODE-3
+; modified the SBRT subroutine in RAM which is used by IF1's shadow rom to call
+; main ROM's subroutines. However, this was a specific solution for IF1 owners
+; and did not work (or even worse crashed) with third-party extensions such as
+; Wafadrive and other storage systems.
+; So I had to resort to more generic solutions:
+;
+; - The FN O() and FN O$() functions which should precede any expressions used
+;   in extended commands ensure that an expression will be evaluated by the
+;   BASICODE interpreter and not the ROM's interpreter;
+;
+; - Extended commands that may cause trouble are redirected to the RANDOMIZE
+;   USR 59453 at line 1:2 afterwards which enters the RE_ENTtry point above;
+;
+; - But when all this doesn't help and we're thrown back into the ROM's main
+;   loop, eventually we'll end up in the BASIC editor and the machine waits for
+;   a key to be pressed - which takes at least one interrupt. So if we
+;   can front-end the keyboard interrupt code with our own, we can modify the
+;   return address on the stack and take back control - a nice piece of ROP
+;   hacking!
+;
+; So, we have to set Interrupt Mode 2 and set the I register to a page
+; containing an interrupt vector - or rather, 257 bytes containing $FD in
+; locations $FE00 to $FF00 inclusive (I know the lower byte is always $FF, but
+; just to be on the safe side...). Thus the Z80 will jump to location $FDFD, 
+; which contains a jump to our INTSRV routine.
+
+       LD     A,#FE           ; Vector table starts at $FE00
+       LD     I,A             ; Set I register
+       IM     2               ; and Interrupt Mode 2
+       LD     HL,(23730)      ; Fetch RAMTOP
+       PUSH   HL              ; and push it on the stack for later
+       LD     HL,100          ; allow for 100 bytes of string space
+       JP     CLR_2           ; Now jump to the CLEAR handler to set the stack
 
 ;EDITOR ROUTINES
 EDITOR LD     HL,(23613)
