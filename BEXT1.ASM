@@ -505,29 +505,35 @@ INIT   CALL   PROGADAPT       ; Remove variables and embedded FP from program
        LD     HL,100          ; allow for 100 bytes of string space
        JP     CLR_2           ; Now jump to the CLEAR handler to set the stack
 
-;EDITOR ROUTINES
+; EDITOR ROUTINES
+; Nothing fancy here, just enough code to duplicate the functionality of the
+; ROM's editor without giving it a chance to take control of the machine...
+; Note that INPUT has its own handler which works on channel #2 so we'll get
+; the input prompt on the current PRINT position, where BASICODE programs
+; usually expect it.
+
 EDITOR LD     HL,(23613)
        PUSH   HL
 ED_AGAIN
        LD     HL,ED_ERROR
        PUSH   HL
-       LD     (23613),SP
+       LD     (23613),SP      ; Set ERR_SP to trap errors for now
 ED_LOOP
-       CALL   #15D4
+       CALL   #15D4           ; WAIT-KEY
        PUSH   AF
        LD     D,#00
        LD     E,(IY-1)
        LD     HL,#00C8
-       CALL   #03B5
+       CALL   #03B5           ; BEEPER
        POP    AF
        LD     HL,ED_LOOP
        PUSH   HL
        CP     #18
-       JP     NC,#0F81
+       JP     NC,#0F81        ; ADD-CHAR
        CP     #07
        JP     C,#0F81
        CP     #10
-       JP     NC,#0F58
+       JP     NC,#0F58        
        CP     #0C
        JP     NC,#0F92
        LD     E,A
@@ -540,21 +546,29 @@ ED_LOOP
        LD     HL,(23643)
        RET
 
+; Control codes
+
 ED_TABLE
        DEFB   ED_EDIT-$
        DEFB   ED_LEFT-$
        DEFB   ED_RIGHT-$
        DEFB   ED_DOWN-$
        DEFB   ED_UP-$
+
+; Error handler
+
 ED_ERROR
-       BIT    4,(IY+48)
-       JP     Z,#1026
-       LD     (IY+0),#FF
+       BIT    4,(IY+48)       ; K channel?
+       JP     Z,#1026         ; Exit if not
+       LD     (IY+0),#FF      ; Clear error
        LD     D,#00
        LD     E,(IY-2)
        LD     HL,#1A90
-       CALL   #03B5
+       CALL   #03B5           ; make a noise
        JR     ED_AGAIN
+
+; Copy line to the editing area when EDIT is pressed
+; Similar to ROM, except we have to deal with 5-digit line numbers...
 
 ED_EDIT
        LD     BC,(23625)
@@ -586,8 +600,8 @@ ED_EDIT
        CALL   OUT_LINE
        INC    (IY+15)
        LD     HL,(23641)
-       INC    HL
-       JP     #0FE7
+       INC    HL              ; One extra digit to be skipped
+       JP     #0FE7           ; Leave the rest to ROM...
 
 ED_DOWN
        LD     HL,23625
@@ -606,41 +620,60 @@ ED_UP  LD     BC,(23625)
        CALL   LN_NO
        LD     HL,#5C4A
        CALL   #191C
+
+; (Re-)list a line
+
 ED_LIST
        CALL   AUTO_LIST
        XOR    A
        JP     #1601
 
 
-;MAIN EXECUTION LOOP
+; MAIN EXECUTION LOOP
+; This is the main loop of the BASICODE interpreter
+; Mostly similar to the rom with a few exceptions...
 
 MAIN_EXEC
-       LD     (IY+49),#02
-       CALL   AUTO_LIST
-MAIN_1 CALL   #16B0
+       LD     (IY+49),#02     ; Set lower screen to 2 lines
+       CALL   AUTO_LIST       ; Produce a program listing
+MAIN_1 CALL   #16B0           ; Clear workspaces
 MAIN_2 XOR    A
-       CALL   #1601
-       LD     (IY+38),#00
-       CALL   EDITOR
+       CALL   #1601           ; Select channel 0
+       LD     (IY+38),#00     ; Clear X-PTR
+       CALL   EDITOR          ; Now wait for a BASIC command or new line
+
+; At this point, the ROM does the syntax check. The BASICODE interpreter does
+; not. Of course, it's debatable whether leaving out this unique feature of
+; ZX BASIC is justified by the saving of only a hundred or so bytes.
+; Since this interpreter will be mainly used to run existing BASICODE programs,
+; I chose to leave the syntax check out. For the BASICODE developers that are
+; still around (if any), my sincerest apologies...
+
 MAIN_3 LD     HL,(23641)
        LD     (23645),HL
        CALL   E_LINE_NO
        JP     C,LN_ERR
        LD     A,B
        OR     C
-       JP     NZ,MAIN_ADD
+       JP     NZ,MAIN_ADD     ; enter new BASIC line
        RST    #18
        CP     #0D
-       JR     Z,MAIN_EXEC
-       RES    7,(IY+1)
+       JR     Z,MAIN_EXEC     ; re-list program
+
+; ???
+
+       RES    7,(IY+1)        ; signal 'syntax check'
        XOR    A
-       LD     (23623),A
+       LD     (23623),A       ; first statement
        DEC    A
-       LD     (23610),A
-       CALL   #1B29
+       LD     (23610),A       ; clear any errors
+       CALL   #1B29           ; STMT-L-1
        LD     HL,(23641)
        BIT    7,(IY)
-       CALL   Z,#11A7
+       CALL   Z,#11A7         ; REMOVE-FP
+
+; ???
+
        BIT    0,(IY+48)
        CALL   NZ,#0DAF
        CALL   #0D6E
@@ -651,7 +684,7 @@ MAIN_3 LD     HL,(23641)
        LD     (IY+0),#FF
        LD     (IY+10),#01
        CALL   PROG_RUN
-MAIN_4 EI
+MAIN_4 EI                     ; No freeze when interrupts disbled!
        HALT
        RES    5,(IY+1)
        BIT    1,(IY+48)
@@ -665,7 +698,7 @@ MAIN_G PUSH   AF
        LD     (23563),HL
        INC    L
        LD     (23574),HL
-       CALL   ERRTRP
+       CALL   ERRTRP          ; Check ON ERROR GOTO status
        CALL   #16B0
        RES    5,(IY+55)
        CALL   #0D6E
@@ -675,29 +708,29 @@ MAIN_G PUSH   AF
        CP     #0A
        JR     C,MAIN_5
        ADD    A,#07
-MAIN_5 CALL   #15EF
+MAIN_5 CALL   #15EF           ; Output error code
        LD     A,#20
-       RST    #10
+       RST    #10             ; followed by a space
        LD     A,B
-       LD     DE,#1391
-       CP     #1C
-       JR     C,MAIN_P
-       LD     DE,EXTMSG
+       LD     DE,#1391        ; Base of ROM's error messages
+       CP     #1C             ; 'Extended' error code?
+       JR     C,MAIN_P        ; No, skip
+       LD     DE,EXTMSG       ; Else, point to extended messages
        SUB    #1C
-MAIN_P CALL   #0C0A
+MAIN_P CALL   #0C0A           ; Now output message
 MAIN   XOR    A
-       LD     DE,#1536
+       LD     DE,#1536        ; Output comma and space
        CALL   #0C0A
        LD     BC,(#5C45)
        BIT    7,B
        JR     Z,MAIN_L
        LD     BC,#0000
-MAIN_L CALL   O_NUM1
+MAIN_L CALL   O_NUM1          ; And line number
        LD     A,#3A
        RST    #10
        LD     C,(IY+13)
        LD     B,#00
-       CALL   O_NUM1
+       CALL   O_NUM1          ; followed by colon and statement number
        CALL   #1097
        LD     A,(#5C3A)
        INC    A
@@ -728,24 +761,23 @@ CLRPPC LD     BC,#0000
        LD     (#5C45),BC
        LD     (IY+13),#01
        JP     MAIN_G
-EXTMSG DEFB   #80,"O","u"
-       DEFB   "t"," ","o"
-       DEFB   "f"," ","s"
-       DEFB   "t","r","i"
-       DEFB   "n","g"," "
-       DEFB   "s","p","a"
-       DEFB   "c",#E5,"I"
-       DEFB   "l","l","e"
-       DEFB   "g","a","l"
-       DEFB   " ","d","i"
-       DEFB   "r","e","c"
-       DEFB   #F4
-       DEFM   "Bad user routin"
+
+; Extended error messages
+
+EXTMSG DEFB   #80
+       DEFM   "Out of string spac"      ; Report S
        DEFB   "e"+#80
-       DEFM   "Not input fil"
+       DEFM   "Illegal direc"           ; Report T
+       DEFB   "t"+#80
+       DEFM   "Bad user routin"         ; Report U
        DEFB   "e"+#80
-       DEFM   "Not output fil"
+       DEFM   "Not input fil"           ; Report V
        DEFB   "e"+#80
+       DEFM   "Not output fil"          ; Report W
+       DEFB   "e"+#80
+
+; MAIN-ADD - add new line to BASIC program
+
 MAIN_A LD     (#5C49),BC
        LD     HL,(23730)
        LD     (STRPTR),HL
@@ -822,6 +854,9 @@ LN_NO  LD     A,(HL)
        INC    HL
        LD     E,(HL)
        RET
+
+; AUTO-LIST
+
 AUTO_L LD     (#5C3F),SP
        LD     (IY+2),#10
        CALL   #0DAF
@@ -879,6 +914,9 @@ A_L_3  LD     HL,(#5C6C)
 A_L_4  CALL   LIST_ALL
        RES    4,(IY+2)
        RET
+
+; LIST and LLIST command handlers
+
 LLIST  LD     A,#03
        JR     LIST_1
 LIST   LD     A,#02
@@ -951,6 +989,9 @@ LN_FETCH
        CALL   LN_NO
        POP    HL
        JP     #191C
+
+; Find address of line number BC in HL
+
 LN_ADDR
        LD     HL,(#5C53)
 LN_A_1 LD     D,H
@@ -975,6 +1016,10 @@ LN_A_3 RET    NZ
        CP     C
        JR     C,LN_NXT
        RET
+
+; Parse line number of newly entered line
+; Carry flag set if number is not acceptable (> 32767)
+
 E_LINE_NO
        LD     HL,(#5C59)
        DEC    HL
@@ -985,6 +1030,9 @@ E_LINE_NO
        LD     A,B
        RLA
        RET
+
+; Output line number
+
 O_NUM1 PUSH   DE
        PUSH   HL
        XOR    A
@@ -999,18 +1047,22 @@ O_NUM2 PUSH   DE
        PUSH   HL
        EX     DE,HL
        LD     E,#20
-O_NUM3 LD     BC,#D8F0
-       CALL   #192A
-       JP     #1A30
+O_NUM3 LD     BC,#D8F0        ; '-10000'
+       CALL   #192A           ; Print first digit or space
+       JP     #1A30           ; Leave the rest to the ROM
+
+; Parse integer and return in BC
+; Note: Carry flag set if overflow
+
 INT_TO_BC
        LD     HL,#0000
        LD     B,H
        LD     C,L
-       CALL   #2D1B
+       CALL   #2D1B           ; Test for digit
        JR     NC,INT_2
        AND    A
        RET
-INT_1  LD     H,B
+INT_1  LD     H,B             ; HL <- 10*BC
        LD     L,C
        ADD    HL,HL
        RET    C
@@ -1027,11 +1079,15 @@ INT_2  LD     D,#00
        RET    C
        LD     B,H
        LD     C,L
-       CALL   #0074
-       CALL   #2D1B
-       JR     NC,INT_1
+       CALL   #0074           ; Next character
+       CALL   #2D1B           ; Test for digit
+       JR     NC,INT_1        ; Loop back for next digit
        AND    A
        RET
+
+; The PROGADAPT routine is called on initialisation to remove the variables and
+; embedded floating point numbers from any existing program.
+
 PROGADAPT
        LD     HL,(#5C4B)
        DEC    HL
@@ -1049,7 +1105,7 @@ PROGADAPT
        CALL   #1652
        INC    HL
        INC    HL
-       LD     (HL),#FF
+       LD     (HL),#FF        ; insert an end marker $FF after the program
        POP    HL
        LD     (#5C53),HL
 PA_CR  LD     A,(HL)
@@ -1075,7 +1131,7 @@ PA_LP  LD     A,(HL)
        DEC    HL
        LD     (HL),E
        EX     (SP),HL
-       CALL   #19E8
+       CALL   #19E8           ; remove FP
        LD     A,(HL)
 NO_NUM CP     #0D
        INC    HL
@@ -1083,33 +1139,40 @@ NO_NUM CP     #0D
        POP    DE
        JR     PA_CR
 
-ONERR  CALL   #1E99
+; The ON ERROR GOTO handler
+; Called via the jump table from BASIC:
+; LET O = <error line number> AND USR 59459
+
+ONERR  CALL   #1E99           ; Get integer in BC
        PUSH   BC
-       CALL   #2D2B
+       CALL   #2D2B           ; Balance the calculator stack
        POP    HL
-       LD     (ERRPPC),HL
-       LD     BC,#0000
+       LD     (ERRPPC),HL     ; Enter number in ERRPPC
+       LD     BC,#0000        ; Return zero
        RET
 
-ERRTRP LD     HL,(ERRPPC)
+; The actual error trapping is done below
+; (called from main interpreter loop)
+
+ERRTRP LD     HL,(ERRPPC)     ; Get error line number
        LD     A,H
        OR     L
-       RET    Z
-       LD     A,(23610)
+       RET    Z               ; Return if no error handler
+       LD     A,(23610)       ; Error code - 1
        INC    A
-       RET    Z
+       RET    Z               ; Return with 'OK'
        CP     #09
-       RET    Z
-       LD     (IY+0),#FF
-       LD     (23618),HL
+       RET    Z               ; Also with 'STOP statement'
+       LD     (IY+0),#FF      ; Else, clear error
+       LD     (23618),HL      ; and set NEWPPC
        LD     HL,#0000
-       LD     (IY+10),L
-       LD     (ERRPPC),HL
-       LD     SP,(23613)
+       LD     (IY+10),L       ; and NSPPC
+       LD     (ERRPPC),HL     ; Clear ERRPPC (to avoid a loop...)
+       LD     SP,(23613)      ; ERR-SP
        POP    HL
-       LD     HL,MAIN_4
+       LD     HL,MAIN_4       ; Ensure error handler is MAIN_4
        PUSH   HL
-       JP     STMT_RET
+       JP     STMT_RET        ; Return, making a jump to NEWPPC
 
 ; Now include part 2...       
        
