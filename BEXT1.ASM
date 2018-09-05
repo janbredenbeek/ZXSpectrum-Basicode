@@ -505,12 +505,14 @@ INIT   CALL   PROGADAPT       ; Remove variables and embedded FP from program
        LD     HL,100          ; allow for 100 bytes of string space
        JP     CLR_2           ; Now jump to the CLEAR handler to set the stack
 
+; -----------------------------------------------------------------------------
 ; EDITOR ROUTINES
 ; Nothing fancy here, just enough code to duplicate the functionality of the
 ; ROM's editor without giving it a chance to take control of the machine...
 ; Note that INPUT has its own handler which works on channel #2 so we'll get
 ; the input prompt on the current PRINT position, where BASICODE programs
 ; usually expect it.
+; -----------------------------------------------------------------------------
 
 EDITOR LD     HL,(23613)
        PUSH   HL
@@ -628,10 +630,11 @@ ED_LIST
        XOR    A
        JP     #1601
 
-
+; -----------------------------------------------------------------------------
 ; MAIN EXECUTION LOOP
 ; This is the main loop of the BASICODE interpreter
 ; Mostly similar to the rom with a few exceptions...
+; -----------------------------------------------------------------------------
 
 MAIN_EXEC
        LD     (IY+49),#02     ; Set lower screen to 2 lines
@@ -649,30 +652,41 @@ MAIN_2 XOR    A
 ; I chose to leave the syntax check out. For the BASICODE developers that are
 ; still around (if any), my sincerest apologies...
 
-MAIN_3 LD     HL,(23641)
-       LD     (23645),HL
-       CALL   E_LINE_NO
+MAIN_3 LD     HL,(23641)      ; E_LINE
+       LD     (23645),HL      ; Reset CH_ADD
+       CALL   E_LINE_NO       ; Line number to BC
        JP     C,LN_ERR
-       LD     A,B
+       LD     A,B             ; Test line number for zero
        OR     C
-       JP     NZ,MAIN_ADD     ; enter new BASIC line
+       JP     NZ,MAIN_ADD     ; If nonzero, enter new BASIC line
        RST    #18
-       CP     #0D
-       JR     Z,MAIN_EXEC     ; re-list program
+       CP     #0D             ; Empty line?
+       JR     Z,MAIN_EXEC     ; Yes, re-list program
 
-; ???
+; The following lines call the ROM's interpreter with the 'syntax check' flag.
+; This is to allow literal numbers in direct commands to be parsed by the ROM's
+; (and possible extension hardware like IF1's) interpreter. It will insert the
+; hidden binary number representation where needed so the direct command can be
+; parsed successfully at runtime by the extension ROM, without having to use
+; awkward workarounds like CAT VAL "1" instead of CAT 1 etc.
+; Note that you cannot use variables here because the way they are stored is
+; incompatible with the ROM's interpreter.
 
        RES    7,(IY+1)        ; signal 'syntax check'
+
+; NOTE: 8 bytes could have been saved here by calling the ROM at $1B1E rather
+;       than $1B29.
+
        XOR    A
        LD     (23623),A       ; first statement
        DEC    A
        LD     (23610),A       ; clear any errors
-       CALL   #1B29           ; STMT-L-1
-       LD     HL,(23641)
-       BIT    7,(IY)
-       CALL   Z,#11A7         ; REMOVE-FP
+       CALL   #1B29           ; call STMT-L-1 to do 'syntax check'
+       LD     HL,(23641)      ; E_LINE
+       BIT    7,(IY)          ; An error gives bit 7 reset
+       CALL   Z,#11A7         ; call REMOVE-FP to remove the FP numbers again
 
-; ???
+; NOTE: the hidden binary numbers will be ignored by our expression evaluator.
 
        BIT    0,(IY+48)
        CALL   NZ,#0DAF
@@ -684,7 +698,7 @@ MAIN_3 LD     HL,(23641)
        LD     (IY+0),#FF
        LD     (IY+10),#01
        CALL   PROG_RUN
-MAIN_4 EI                     ; No freeze when interrupts disbled!
+MAIN_4 EI                     ; No freeze when interrupts disabled!
        HALT
        RES    5,(IY+1)
        BIT    1,(IY+48)
@@ -1085,8 +1099,10 @@ INT_2  LD     D,#00
        AND    A
        RET
 
+; -----------------------------------------------------------------------------
 ; The PROGADAPT routine is called on initialisation to remove the variables and
 ; embedded floating point numbers from any existing program.
+; -----------------------------------------------------------------------------
 
 PROGADAPT
        LD     HL,(#5C4B)
@@ -1139,9 +1155,11 @@ NO_NUM CP     #0D
        POP    DE
        JR     PA_CR
 
+; -----------------------------------------------------------------------------
 ; The ON ERROR GOTO handler
 ; Called via the jump table from BASIC:
 ; LET O = <error line number> AND USR 59459
+; -----------------------------------------------------------------------------
 
 ONERR  CALL   #1E99           ; Get integer in BC
        PUSH   BC
@@ -1174,6 +1192,9 @@ ERRTRP LD     HL,(ERRPPC)     ; Get error line number
        PUSH   HL
        JP     STMT_RET        ; Return, making a jump to NEWPPC
 
-; Now include part 2...       
+; -----------------------------------------------------------------------------
+; END OF PART 1
+; Now include part 2...
+; -----------------------------------------------------------------------------
        
 *F 1:BEXT2
