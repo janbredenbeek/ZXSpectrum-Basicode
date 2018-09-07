@@ -1,3 +1,4 @@
+; =====================================================================
 ; BASICODE-3 v3.1 FOR THE ZX SPECTRUM 48K
 ; Copyright (C) 1985-2017 by JAN BREDENBEEK, HILVERSUM, THE NETHERLANDS
 ; RELEASED UNDER GNU v3 PUBLIC LICENSE, 2017
@@ -5,7 +6,8 @@
 ; BEXT - BASICODE COMPATIBILITY EXTENSION
 ; v2.0 - 30 DECEMBER 1985
 ; v2.02 - 24 NOVEMBER 1987
-
+; =====================================================================
+;
 ; This code is largely based on the ZX Spectrum ROM's BASIC, which is copyrighted by Amstrad.
 ; However, the Spectrum's ROM has been extensively documented in various disassemblies, starting with
 ; "The Complete Spectrum ROM Disassembly" by Ian Logan and Frank O'Hara (Melbourne House, 1983).
@@ -15,11 +17,12 @@
 ; This means that the presence of the 48K Spectrum's ROM is essential for proper operation.
 ; It would of course be very challenging to make the Spectrum ROM's BASIC itself BASICODE compatible
 ; so we could save a lot of duplicated code in RAM and avoid the dirty tricks necessary to trap the
-; notorious attempts by many hardware extensions (including Sinclair's Interface 1) to switch back to
+; notorious attempts by many hardware extensions (including Sinclair's Interface 1) to jump back to
 ; the original ROM BASIC when using their 'extended' commands. On a standalone (possibly emulated)
 ; 48K Spectrum this might be a viable option, however it would render a lot of hard- and software
 ; useless since they depend onto a large degree upon fixed addresses in the Spectrum ROM.
 ; But in these days of emulators where you can switch ROMs with a few clicks, it might be worth a try...
+; ------------------------------------------------------------------------------------------------------
 
 FUNCS  EQU    58840           ; Start of jump-table of user-defined functions
 VAL    EQU    FUNCS+9         ; Offset of VAL entry
@@ -27,6 +30,8 @@ SCREEN EQU    FUNCS+12        ; Offset of SCREEN$ entry
 VALSUB EQU    FUNCS+21        ; VAL subroutine
 VALFRC EQU    FUNCS+24        ; fractions
 ERROR  EQU    #0053           ; Spectrum's error handler (no ROM paging)
+
+; Jump table for entry points called from BASIC or other modules
 
        ORG    59450
        JP     INIT            ; initialisation
@@ -37,8 +42,9 @@ ERROR  EQU    #0053           ; Spectrum's error handler (no ROM paging)
        JP     MAIN_9          ; Entry point to MAIN_9
        JP     OUT_LINE        ; Entry point to OUT_LINE
        JP     O_NUM1          ; Entry point to OUT_NUM1
-       JP     FN_D            ; Entry point to FN o()
-       
+       JP     FN_D            ; Entry point to FN o() (see below)
+
+; -----------------------------------------------------------------------------       
 ; This is called by FN o() and FN o$() from BASIC, in expressions called by
 ; add-ons such as Interface 1 and various 3rd party storage systems. These call
 ; the original SCANNING subroutine in the Spectrum ROM which cannot handle our
@@ -47,11 +53,13 @@ ERROR  EQU    #0053           ; Spectrum's error handler (no ROM paging)
 ; (really awkward syntax but only needed in the standard subroutines!)
 ; The purpose of these functions is to change the return address to SCANRT
 ; below (which is our equivalent to S_CONT_2 in the Spectrum ROM).
+; -----------------------------------------------------------------------------
        
 FN_D$  LD     HL,6            ; Point to result flag on the stack
        ADD    HL,SP
        RES    7,(HL)          ; Signal 'string result'
-       
+
+; -----------------------------------------------------------------------------
 ; FN o() enters here. Note that the original names were FN d() and FN d$() but
 ; in 1987 the BASICODE Foundation decided to 'legalise' DEFFN so the name had 
 ; to be changed to a 'reserved' one!
@@ -59,6 +67,7 @@ FN_D$  LD     HL,6            ; Point to result flag on the stack
 ; the recursive call to SCANNING in the ROM (at $24FB) which evaluates the
 ; FN's result. If found, this address is replaced with the equivalent address
 ; in our BASICODE interpreter.
+; -----------------------------------------------------------------------------
        
 FN_D   LD     HL,12           ; Point to return address
        ADD    HL,SP
@@ -74,11 +83,12 @@ FN_D   LD     HL,12           ; Point to return address
        LD     (HL),D          ; evaluator
        DEC    HL
        LD     (HL),E
-       LD     HL,1            ; Set NEWPPC to 1
-       LD     (23618),HL
+       LD     HL,1            ; Set NEWPPC to 1 (NOTE: Probably useless since
+       LD     (23618),HL      ; NSPPC has to be set too for BASIC to jump!)
        RET
 
-; The return point; restore CH_ADD and DEFADD and jump to S-CONT-2
+; The return point; restore CH_ADD and DEFADD and jump to S-CONT-2 to continue
+; evaluation, but this time using our evaluator.
 
 SCANRT POP    HL
        LD     (23645),HL
@@ -87,7 +97,9 @@ SCANRT POP    HL
        RST    #20
        JP     CONT2
 
+; ---------
 ; Variables
+; ---------
 
 EXTVEC DEFW   53959           ; Address of routine to call on '*' command
 ERRPPC DEFW   #0000           ; 'ON ERROR GOTO' line number
@@ -96,14 +108,16 @@ SUBPPC DEFB   #00             ; Id. for SUBPPC
 STRS   DEFW   #0000           ; Start of string space
 STRPTR DEFW   #0000           ; Pointer to first used string space
 
+; ----------------------------------------------------------
 ; SAVE, LOAD, VERIFY & MERGE
 ; This code mimics the ROM, except:
 ; - SAVE etc. does not save the variables of a BASIC program
 ; - SAVE etc... DATA is not supported
+; ----------------------------------------------------------
 
 SAVE_ETC
        POP    BC
-       CALL   SET_PPC
+       CALL   SET_PPC         ; Re-enter our interpreter afterwards
        LD     A,(23668)
        SUB    #E0
        LD     (23668),A
@@ -401,13 +415,14 @@ RE_TES CP     #CF             ; Code for CAT
        RET    C               ; Exclude lower codes
        CP     #D5             ; This includes CAT, FORMAT, MOVE, ERASE,
        JR     C,SET_PPC       ; OPEN # and CLOSE #
-       CP     #FB             ; Include CLS
+       CP     #FB             ; Include CLS (because of CLS #)
        RET    NZ
 
 ; -----------------------------------------------------------------------------
-; A command from an expansion unit such as Interface-1 or a disk interface is
-; to be executed. This requires special care as these hardware usually don't
-; know about BASICODE and hook into the ROM's interpreter entry points. So we
+; A command which might cause entry to the ROM of an expansion unit such as
+; Interface-1 or a disk interface is to be executed. 
+; This requires special care as these hardware usually don't know about our
+; BASICODE interpreter and jump into the ROM's interpreter entry points, so we
 ; would end up with the old Spectrum's BASIC after execution of these commands.
 ; To force a re-entry of the BASICODE interpreter, we'll set NEWPPC and NSPPC
 ; to line 1 and statement 2. Line 1 reads 'REM: RANDOMIZE USR VAL "59453" which
@@ -463,6 +478,7 @@ INIT   CALL   PROGADAPT       ; Remove variables and embedded FP from program
        LD     HL,STMT_RET     ; And push our own STMT_RET back
        PUSH   HL
 
+; -----------------------------------------------------------------------------
 ; We now have control of the system. However, this doesn't mean that we'll
 ; always keep it. Many extension ROMs, including Sinclair's Interface 1,
 ; work by trapping errors from 'extended' BASIC commands which the main
@@ -496,6 +512,7 @@ INIT   CALL   PROGADAPT       ; Remove variables and embedded FP from program
 ; locations $FE00 to $FF00 inclusive (I know the lower byte is always $FF, but
 ; just to be on the safe side...). Thus the Z80 will jump to location $FDFD, 
 ; which contains a jump to our INTSRV routine.
+; -----------------------------------------------------------------------------
 
        LD     A,#FE           ; Vector table starts at $FE00
        LD     I,A             ; Set I register
