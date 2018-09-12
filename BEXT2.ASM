@@ -1,24 +1,35 @@
+; =============================================================================
 ; BASICODE-3 v3.1 FOR THE ZX SPECTRUM 48K
 ; Copyright (C) 1985-2017 by JAN BREDENBEEK, HILVERSUM, THE NETHERLANDS
 ; RELEASED UNDER GNU v3 PUBLIC LICENSE, 2017
 
 ; BEXT SECTION 2
 ; v2.02; 24 NOVEMBER 1987
-
-; This code is largely based on the ZX Spectrum ROM's BASIC, which is copyrighted by Amstrad.
-; However, the Spectrum's ROM has been extensively documented in various disassemblies, starting with
-; "The Complete Spectrum ROM Disassembly" by Ian Logan and Frank O'Hara (Melbourne House, 1983).
-; This disassembly has been the basis of my Basicode EXTension to create an alternative interpreter
-; for running BASICODE programs. Code has been copied and modified for BASICODE compatibility while
-; at the same time calls and jumps to the ROM code are used as much as possible to save space.
-; This means that the presence of the 48K Spectrum's ROM is essential for proper operation.
-; It would of course be very challenging to make the Spectrum ROM's BASIC itself BASICODE compatible
-; so we could save a lot of duplicated code in RAM and avoid the dirty tricks necessary to trap the
-; notorious attempts by many hardware extensions (including Sinclair's Interface 1) to switch back to
-; the original ROM BASIC when using their 'extended' commands. On a standalone (possibly emulated)
-; 48K Spectrum this might be a viable option, however it would render a lot of hard- and software
-; useless since they depend onto a large degree upon fixed addresses in the Spectrum ROM.
-; But in these days of emulators where you can switch ROMs with a few clicks, it might be worth a try...
+; =============================================================================
+;
+; This code is partly based on the ZX Spectrum ROM's BASIC, which is
+; copyrighted by Amstrad plc. However, the Spectrum's ROM has been extensively
+; documented in various disassemblies, starting with "The Complete Spectrum
+; ROM Disassembly" by Ian Logan and Frank O'Hara (Melbourne House, 1983).
+; This disassembly has been the basis of my Basicode EXTension to create an
+; alternative interpreter for running BASICODE programs. Parts of the ROM code
+; have been taken and modified for BASICODE compatibility while at the same
+; time calls and jumps to the ROM code are used as much as possible to save
+; space. This means that the presence of the 48K Spectrum's ROM is essential
+; for proper operation (at present, the BASICODE extension is compatible with
+; the Spectrum 128 models but only in 48K mode).
+; In today's world of emulators, it would of course be a nice challenge to make
+; the Spectrum ROM's BASIC itself BASICODE compatible so we could save a lot
+; of duplicated code in RAM and avoid the dirty tricks necessary to thwart the
+; notorious practice by many hardware extensions (including Sinclair's
+; Interface 1) to disable our BASICODE interpreter by jumping to various
+; locations in the Spectrum's ROM. If you want to take on this challenge by
+; using this code in your own ROM you are free to do so, but remember that the
+; resulting code might still be covered by Amstrad's copyright. 
+; Note that Amstrad has given permission to use the Spectrum ROM's code, even
+; in modified form, in emulators as long as you don't charge money for it.
+; (source: http://www.shadowmagic.org.uk/spectrum/roms.html).
+; -----------------------------------------------------------------------------
 
 ; Table containing token codes for modified commands
 
