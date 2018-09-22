@@ -3,7 +3,7 @@
 ; Copyright (C) 1985-2017 by JAN BREDENBEEK, HILVERSUM, THE NETHERLANDS
 ; RELEASED UNDER GNU v3 PUBLIC LICENSE, 2017
 
-; BEXT SECTION 2
+; BEXT SECTION 2: MAIN INTERPRETER ROUTINES
 ; v2.02; 24 NOVEMBER 1987
 ; =============================================================================
 ;
@@ -31,7 +31,12 @@
 ; (source: http://www.shadowmagic.org.uk/spectrum/roms.html).
 ; -----------------------------------------------------------------------------
 
-; Table containing token codes for modified commands
+;-------------------------------------------------------------------------
+; Table containing token codes for modified commands.
+; Each entry contains the token code followed by the offset to the
+; syntax table entry.
+; For any commands not listed here, the ROM table will be used (at $1A48).
+;-------------------------------------------------------------------------
 
 EXT_OF DEFB   #F3,P_NEXT-$
        DEFB   #FE,P_RETURN-$
@@ -56,8 +61,13 @@ EXT_OF DEFB   #F3,P_NEXT-$
        DEFB   #FD,P_CLEAR-$
        DEFB   #00
 
-;SYNTAX TABLE FOR
-;"EXTENDED" COMMANDS
+; -----------------------------------------------------------------------------
+; The syntax table for these commands.
+; A full explanation can be found in the various Spectrum ROM disassemblies
+; But to recap: Codes below $20 are 'command classes' with distinct handling
+; routines. Codes above $20 are required separators in the syntax of a command.
+; Each entry is terminated by the command's handler address.
+; -----------------------------------------------------------------------------
 
 P_IF   DEFB   #06,#CB,#05
        DEFW   IF
@@ -113,8 +123,10 @@ P_DEFFN
 P_CLEAR
        DEFB   #05
        DEFW   CLEAR
-       
-; Main statement loop       
+
+; --------------------
+; Main statement loop.
+; --------------------
        
 STMT_LOOP
        RST    #20             ; get next char
@@ -132,7 +144,7 @@ ST_L_1 CALL   #16BF           ; clear workspace
        LD     C,A             ; save command code
        RST    #20             ; advance BASIC pointer
        LD     HL,EXT_OF       ; first try our 'extended' command table
-       CALL   #16DC           ; INDEXER
+       CALL   #16DC           ; Call INDEXER to lookup the table
        JR     C,ST_L_2        ; jump if found
        LD     A,C             ; get command code again in A
        CP     "*"             ; BASICODE Menu command?
@@ -200,7 +212,7 @@ DEC_CT DEC    BC
 RPRT_U CALL   ERROR           ; Report U: "Bad user routine"
        DEFB   #1D
 
-; Return from executed BASIC statement       
+; Return from executed BASIC statement
        
 STMT_RET
        SCF                    ; preset carry for 'no BREAK'
@@ -226,7 +238,7 @@ PROG_RUN
        LD     A,(23620)       ; NSPPC
        JR     NEXT_LINE
        
-; There has been a jump in the BASIC program; HL holds new line number
+; A jump is to be made in the BASIC program; HL holds new line number
        
 LN_NEW LD     DE,(23621)      ; PPC (current line number)
 
@@ -357,7 +369,7 @@ JUMPCR LD     HL,(23668)      ; get T_ADDR pointer
 CL01   CALL   LOOKVARS        ; Class 01 - a variable name must follow
 
 VAR_A1 LD     (IY+55),#00     ; initialise FLAGX
-       LD     (23666),BC      ; set STRLEN
+       LD     (23666),BC      ; save length of name and type in STRLEN
        JR     NC,VAR_A2       ; jump if existing variable
        SET    1,(IY+55)       ; signal 'new variable'
        JR     NZ,VAR_A3       ; but do not allow undimensioned arrays
@@ -467,8 +479,21 @@ IF     POP    BC              ; drop STMT-RET
        JP     C,LINE_END      ; if zero ('false'), jump to next line
        JP     ST_L_1          ; else go to statement after THEN
 
-; FOR command
-; This stores 18 bytes on the stack:
+;--------------------------
+; The FOR and NEXT commands
+; -------------------------
+; Unlike the ROM, we don't store the limit and step values in a variable.
+; Instead, we store them on the machine stack! This has the advantage that a
+; FOR-NEXT loop may be terminated using NEXT without a variable, although this
+; is against the BASICODE protocol! But unfortunately, this is a mistake made
+; in many existing programs so I used this opportunity to be tolerant here...
+; Of course, this tolerant approach does have a downside in that FOR-NEXT loops
+; must be properly nested (the ROM's BASIC is more forgiving in this respect).
+; Some amount of bad behaviour is allowed though - Re-using a FOR variable from
+; a previously incomplete loop won't clutter up the stack, and RETURNing from a
+; GOSUB will clean up any incomplete FOR loops set up in the subroutine.
+;
+; When a FOR loop is set up, 18 bytes will be put on the stack:
 ; Byte  0:          $EB (FOR marker)
 ; Bytes 1-2:        Address of FOR variable in VARS area
 ; Bytes 3-7:        Limit value
@@ -476,519 +501,771 @@ IF     POP    BC              ; drop STMT-RET
 ; Byte  13:         Statement number after FOR
 ; Bytes 14-15:      Line number of FOR statement
 ; Bytes 16-17:      Address offset in PROG/E_LINE
+;
+; Using pointers to the FOR variable and program address will make the loop
+; MUCH faster since no time-consuming searches through the PROG and VARS areas
+; have to be done with each iteration of the loop! But this comes with a
+; penalty: once you've made any modification to the program, you won't be able
+; to CONTINUE since all pointers will have been invalidated and the variables
+; cleaned up.
+; Once again, since most users would use this interpreter for running existing
+; BASICODE programs, I chose to sacrifice this feature of ZX BASIC for extra
+; speed (which it rather needed compared to other BASICs in its era!).
+;
+; Note that the FOR-NEXT loop will ALWAYS be executed at least once, even if
+; the value has already reached the limit when the FOR statement is executed
+; (e.g. FOR I=1 TO N when N is zero)! Although this is strictly speaking wrong,
+; it is compatible with the way BASICODE and most other BASICs in the '80s era
+; handled this. It is therefore impossible to get a 'FOR without NEXT' error
+; message. Also note that FOR-NEXT variables can now have more than one letter
+; in their name, unlike in Sinclair BASIC.
+;------------------------------------------------------------------------------
        
-FOR    CP     #CD
-       JR     NZ,USE1
-       RST    #20
-       CALL   EX_1NUM
-       JR     REORDER
-USE1   RST    #28
-       DEFB   #A1,#38
-REORDER
-       RST    #28
-       DEFB   #C0,#02,#01
-       DEFB   #E0,#01,#38
-       CALL   LET
-       LD     E,(IY+57)
-       LD     D,0
-       SCF
-       SBC    HL,DE
-       LD     DE,(23627)
-       SBC    HL,DE
-       LD     (23629),HL
-       BIT    1,(IY+55)
-       JR     NZ,F_CONT
-       LD     B,H
+FOR    CP     #CD             ; Do we have a 'STEP'?
+       JR     NZ,USE1         ; No, use STEP value of one
+       RST    #20             ; Advance to the value after STEP
+       CALL   EX_1NUM         ; Evaluate it
+       JR     REORDER         ; Skip forward
+USE1   RST    #28             ; A default STEP value of one is to be put onto
+       DEFB   #A1,#38         ; the calculator stack (stk-one, end-calc).
+REORDER                       ; Now do some re-ordering of the values
+       RST    #28             ; FP-stack contains: value, limit, step
+       DEFB   #C0,#02,#01     ; now: limit, value (step in MEM-0)
+       DEFB   #E0,#01,#38     ; now: limit, step, value
+       CALL   LET             ; Call LET to assign the value to the variable
+       LD     E,(IY+57)       ; STRLEN-hi holds the length of its name
+       LD     D,0             ; this goes to DE
+       SCF                    ; HL points to the value, which is after the name
+       SBC    HL,DE           ; + null byte; now go back to the start of name
+       LD     DE,(23627)      ; VARS
+       SBC    HL,DE           ; Find offset of variable's address from VARS
+       LD     (23629),HL      ; and enter this into DEST
+       BIT    1,(IY+55)       ; Was it a pre-existing variable?
+       JR     NZ,F_CONT       ; No, skip
+       LD     B,H             ; Offset goes to BC
        LD     C,L
-       LD     HL,4
-       ADD    HL,SP
-STK_LP LD     A,(HL)
-       AND    A
-       JR     Z,F_CONT
-       CP     #EB
-       JR     Z,F_TEST
-       LD     DE,6
-F_NEXT ADD    HL,DE
-       JR     STK_LP
-F_TEST INC    HL
-       LD     E,(HL)
-       INC    HL
-       LD     D,(HL)
-       EX     DE,HL
-       SBC    HL,BC
-       EX     DE,HL
-       LD     DE,16
-       JR     NZ,F_NEXT
-       CALL   REC_ENTRY
-F_CONT CALL   STMTAD
-       POP    BC
-       EX     (SP),HL
-       EX     DE,HL
-       LD     HL,(23621)
-       PUSH   HL
-       LD     A,(23623)
-       PUSH   AF
-       LD     HL,-9
-       ADD    HL,SP
-       LD     SP,HL
-       PUSH   HL
-       LD     HL,(23629)
-       EX     (SP),HL
-       LD     A,#EB
-       PUSH   AF
-       INC    SP
-       PUSH   DE
-       LD     (23613),SP
-       PUSH   BC
-       PUSH   HL
-       RST    #28
-       DEFB   #02,#02,#38
-       POP    HL
-       EX     DE,HL
-       LD     BC,10
-       LDIR
-       RET
+       LD     HL,4            ; The FOR/GOSUB stack starts 4 locations after
+       ADD    HL,SP           ; the machine stack
 
-NEXT_1 RST    #20
-NEXT   LD     HL,4
-       ADD    HL,SP
-NXT_LP LD     A,(HL)
-       CP     #EB
-       JP     NZ,#1DD8
-       INC    HL
+; Now enter a loop to scan the FOR/GOSUB stack for previous incomplete FOR
+; loops; these will be reclaimed from the stack.
+; Note: Each FOR/GOSUB entry starts with a token byte (FOR/GOSUB); the end
+; (or rather bottom) of the stack is marked with a null byte (as opposed to
+; the $3E byte in the ROM's version!).
+
+STK_LP LD     A,(HL)          ; Get token byte or end marker
+       AND    A               ; Have we reached the bottom of the stack?
+       JR     Z,F_CONT        ; Yes, skip
+       CP     #EB             ; Is it a FOR entry?
+       JR     Z,F_TEST        ; Yes, test it
+       LD     DE,6            ; else, assume it's GOSUB which has 6 bytes
+F_NEXT ADD    HL,DE           ; .. and skip it
+       JR     STK_LP
+F_TEST INC    HL              ; Get offset of FOR variable to be tested in DE
        LD     E,(HL)
        INC    HL
        LD     D,(HL)
-       PUSH   HL
-       LD     HL,(23627)
-       ADD    HL,DE
-       EX     DE,HL
-       RST    #18
-       EX     DE,HL
-       CALL   #2C8D
-       JR     NC,NEXT_2
-       PUSH   DE
-NXTNAM OR     #20
-       CP     (HL)
-       JR     Z,NXT_UPD
-NXTPTR POP    HL
-       LD     (23645),HL
-       POP    HL
-       LD     DE,16
-       ADD    HL,DE
-       JR     NXT_LP
-NXT_UP INC    HL
-       EX     DE,HL
-       RST    #20
-       EX     DE,HL
-       CALL   #2C88
-       JR     C,NXTNAM
-       LD     A,(HL)
-       AND    A
-       JR     NZ,NXTPTR
-       POP    DE
-NEXT_2 XOR    A
-       LD     B,1
-       CPIR
-       LD     (23656),HL
-       POP    HL
-       PUSH   HL
+       EX     DE,HL           ; Variable's offset to HL
+       SBC    HL,BC           ; Compare against offset of new FOR variable
+       EX     DE,HL           ; Switch registers back
+       LD     DE,16           ; 16 locations to be skipped
+       JR     NZ,F_NEXT       ; Loop back if no match
+       CALL   REC_ENTRY       ; Else, reclaim this FOR entry from the stack
+
+; Now we're ready to set up a new FOR loop
+
+F_CONT CALL   STMTAD          ; Find current location relative to PROG/E_LINE
+       POP    BC              ; BC now holds return address of STMT_RET
+       EX     (SP),HL         ; Exchange statement location with error return
+       EX     DE,HL           ; address; this now goes to DE
+       LD     HL,(23621)      ; Current line number
+       PUSH   HL              ; Push this onto the stack
+       LD     A,(23623)       ; Current statement number
+       PUSH   AF              ; Push this (high byte, we'll reclaim the lower
+       LD     HL,-9           ; byte by allocating 'only' 9 bytes for the limit
+       ADD    HL,SP           ; and step value rather than 10)
+       LD     SP,HL           ; Set the new machine stack pointer
+       PUSH   HL              ; Save the location for limit and step value
+       LD     HL,(23629)      ; Get offset of variable to VARS
+       EX     (SP),HL         ; Put this on the stack and retrieve HL
+       LD     A,#EB           ; The FOR token
+       PUSH   AF              ; Push this on the stack as marker
+       INC    SP              ; We don't need the flags byte...
+       PUSH   DE              ; Push error return point (usually MAIN_4)
+       LD     (23613),SP      ; This will be the new ERR_SP
+       PUSH   BC              ; Push STMT_RET address
+       PUSH   HL              ; Save HL again
+       RST    #28             ; Delete limit and step from the calculator stack
+       DEFB   #02,#02,#38     ; (but DE will still point to them afterwards)
+       POP    HL              ; Retrieve pointer to stack area for limit & step
+       EX     DE,HL           ; Switch source and destination
+       LD     BC,10           ; Two values means 10 bytes to copy
+       LDIR                   ; Now copy limit and step to the stack area
+       RET                    ; Finished
+
+;-----------------
+; The NEXT handler
+; ----------------
+; The correct form in BASICODE is:
+; FOR I = A TO B
+;   FOR J = C TO D
+;     ...
+;   NEXT J
+; NEXT I
+;
+; However, BASICODE was based on Microsoft BASIC, which allows constructs
+; using 'NEXT I,J' or, even worse, 'NEXT:NEXT'. This is NOT allowed in
+; in BASICODE, but since M$ BASIC won't complain about it, many such errors
+; slipped through quality control (which of course also tested on M$ BASIC)
+; and got aired nevertheless. So I decided to be tolerant about it.
+; Another problem: Some folks who call themself programmers set up a FOR-NEXT
+; loop and then decide they have to get out of it by GOTOing past the NEXT
+; (in the above example from the inner loop to the NEXT I), thereby leaving the
+; loop active. Again, I did spend some lines and lots of time to tolerate this
+; sort of crime (I wonder how M$ BASIC would handle this). So in this case, the
+; inner loop will be properly cleaned up from the stack.
+;------------------------------------------------------------------------------
+
+NEXT_1 RST    #20             ; Loop after dealing with NEXT I,J - skip comma
+
+; Normal entry point is here
+
+NEXT   LD     HL,4            ; Skip STMT_RET and error return address on stack
+       ADD    HL,SP
+NXT_LP LD     A,(HL)          ; Get marker byte
+       CP     #EB             ; Is it 'FOR'?
+       JP     NZ,#1DD8        ; If no FOR on stack, throw 'NEXT without FOR'.
+
+; NOTE: This will also occur when a NEXT is done in a GOSUB'ed subroutine
+; called from within a corresponding FOR loop. I can't imagine any useful case
+; for this - but there might be folks somewhere around who could. In any case,
+; I never got complaints about it :-).
+
+       INC    HL              ; Advance to variable pointer
+       LD     E,(HL)
        INC    HL
-       CALL   #33B4
-       CALL   #33B4
-       RST    #28
-       DEFB   #31,#E0,#0F
-       DEFB   #C0,#01,#36
-       DEFB   #00,#02,#01
-       DEFB   #03,#37,#00
-       DEFB   NEXT_3-$
-       DEFB   #38
-       POP    HL
+       LD     D,(HL)          ; Get variable's offset in DE
+       PUSH   HL              ; Save pointer to stack address
+       LD     HL,(23627)      ; base of VARS
+       ADD    HL,DE           ; Form absolute address in HL
+       EX     DE,HL           ; Save in DE
+       RST    #18             ; Get current character
+       EX     DE,HL           ; Variable's address in HL
+       CALL   #2C8D           ; Is character after NEXT alphabetic?
+       JR     NC,NEXT_2       ; Skip if not
+       PUSH   DE              ; Else, save address of current character
+
+; A variable name has been specified after NEXT so we need to match this up
+; against the active FOR-NEXT loops on the stack.
+
+NXTNAM OR     #20             ; convert to lower case
+       CP     (HL)            ; Match character
+       JR     Z,NXT_UPD       ; If it matches, jump to consider next characters
+NXTPTR POP    HL              ; Retrieve pointer to current character
+       LD     (23645),HL      ; Restore CH_ADD
+       POP    HL              ; Retrieve pointer to stack
+       LD     DE,16           ; Distance to next stack entry is 16 bytes
+       ADD    HL,DE
+       JR     NXT_LP          ; Loop for next entry on stack
+NXT_UP INC    HL              ; Step to next character
+       EX     DE,HL           ; Save DE while the next character in the BASIC
+       RST    #20             ; line is fetched
+       EX     DE,HL
+       CALL   #2C88           ; Is it alphanumeric?
+       JR     C,NXTNAM        ; Yes, loop to compare it against variable name
+       LD     A,(HL)          ; The end of the variable name after NEXT must
+       AND    A               ; also match the end of the variable name in VARS
+       JR     NZ,NXTPTR       ; if not, restore pointers and try again
+       POP    DE              ; Retrieve pointer to variable name after NEXT
+
+; The FOR-NEXT variable has been identified and its value must be tested
+; against the 'limit'.
+
+NEXT_2 XOR    A               ; Look for the NULL byte that terminates the name
+       LD     B,1             ; (when coming from a successful name match, this
+       CPIR                   ; is simply the next byte after the NULL)
+       LD     (23656),HL      ; Set MEMBOT, mem-0 now points to current value
+       POP    HL              ; Retrieve address of loop data on stack
+       PUSH   HL
+       INC    HL              ; Point to the limit value
+       CALL   #33B4           ; Put limit value on calculator stack (l)
+       CALL   #33B4           ; followed by STEP value (now l, s)
+       RST    #28             ; Enter calculator
+       DEFB   #31,#E0,#0F     ; duplicate, get-mem-0, add (l, s, v+s)
+       DEFB   #C0,#01,#36     ; store-mem-0, exchange, less-0 (l, v+s, s<0)
+       DEFB   #00,#02,#01     ; jump-true, (offset), exchange
+                              ; (if s<0: l, v+s; else v+s, l)
+       DEFB   #03,#37,#00     ; subtract, greater-0, jump-true
+       DEFB   NEXT_3-$        ; if limit reached, jump to NEXT_3
+       DEFB   #38             ; end-calc
+       POP    HL              ; Retrieve pointer to loop data on stack
        LD     DE,11
-       ADD    HL,DE
-JUMP   LD     A,(HL)
-       LD     (23623),A
+       ADD    HL,DE           ; Step past limit and step values
+
+; A jump is to be made in the program. HL points to the following data:
+;
+; - byte  0  : New statement number
+; - bytes 1-2: New line number
+; - bytes 3-4: Address of character where execution is to be continued
+;   This address is either relative to PROG (when executing a program) or
+;   E_LINE (when executing a direct command).
+;
+; Note that this routine directly sets the appropriate system variables,
+; without going to the laborious process of setting NEWPPC and NSPPC and
+; letting the interpreter search the whole program for the place we want to be.
+; After all, we HAVE already been there when executing the FOR or GOSUB
+; statement that brought us here!
+; This routine is also called from RETURN.
+
+JUMP   LD     A,(HL)          ; Get new statement number
+       LD     (23623),A       ; Set SUBPPC
        INC    HL
-       LD     C,(HL)
+       LD     C,(HL)          ; Get new line number in BC
        INC    HL
        LD     B,(HL)
-       LD     (23621),BC
+       LD     (23621),BC      ; Set PPC
        INC    HL
-       LD     E,(HL)
-       INC    HL
+       LD     E,(HL)          ; Now get offset of next character
+       INC    HL              ; to be interpreted
        LD     D,(HL)
-       LD     HL,(23635)
-       BIT    7,B
-       JR     Z,JP_ADD
-       LD     HL,(23641)
-JP_ADD ADD    HL,DE
-       LD     (23645),HL
-       JR     Z,FND_CR
-       LD     HL,(23649)
-       DEC    HL
-       JR     SETNXL
-FND_CR LD     A,#0D
-       LD     B,A
-       CPIR
-SETNXL LD     (23637),HL
-       RET
-NEXT_3 DEFB   #38
-       POP    HL
-       CALL   REC_ENTRY
-NEXT_4 RST    #18
-       CP     ","
-       JP     Z,NEXT_1
-       RET
+       LD     HL,(23635)      ; Assume it's relative to PROG
+       BIT    7,B             ; BC will be < 0 when executing a direct command
+       JR     Z,JP_ADD        ; Jump with 'real' line numbers
+       LD     HL,(23641)      ; Else, it's a direct command - fetch E_LINE
+JP_ADD ADD    HL,DE           ; Now form the absolute address in HL
+       LD     (23645),HL      ; and set CH_ADD
+       JR     Z,FND_CR        ; Zero flag still reset for direct commands
+       LD     HL,(23649)      ; When executing a direct command, the end of
+       DEC    HL              ; line will be WORKSP - 1
+       JR     SETNXL          ; Jump forward
+
+; We still need to set NXTLIN so we need to look for the end of the line,
+; marked by a CR character.
+; Note: We can do this with a simple CPIR as we don't have to skip-over hidden
+; numbers in a program. Direct commands CAN contain hidden numbers, but are
+; catered for by the code here above so don't need to be scanned for a CR.
+; Since program lines in BASICODE should be <= 60 characters, this search will
+; not take very long...
+
+FND_CR LD     A,#0D           ; Search for a CR character
+       LD     B,A             ; Set BC reasonable high enough
+       CPIR                   ; Now scan the remainder of the line
+SETNXL LD     (23637),HL      ; Set NXTLIN
+       RET                    ; Done
+
+; Come here when the loop has finished - return from the calculator and clean
+; up the loop data on the stack.
+
+NEXT_3 DEFB   #38             ; end-calc
+       POP    HL              ; Retrieve pointer to stacked data
+       CALL   REC_ENTRY       ; Reclaim this from the stack
+NEXT_4 RST    #18             ; Get current character
+       CP     ","             ; Test for the form 'NEXT I,J' (strictly illegal
+       JP     Z,NEXT_1        ; but tolerated), loop back for next item
+       RET                    ; Done with NEXT.
+
+; The LOOK_PROG routine looks for a specific keyword in the program area
+; This mimics the equivalent ROM routine, except that this routine handles
+; line numbers over 16383. It is called on just one occasion to look for DATA
+; statements. In the ROM, it also handled DEF FN and NEXT, but these are
+; handled differently here.
+; Unlike in Sinclair BASIC, the program area is terminated by a $FF byte after
+; the last line.
 
 LOOK_PROG
-       LD     A,(HL)
-       CP     #3A
-       JR     Z,LOOK2
-LOOK1  INC    HL
-       LD     A,(HL)
-       ADD    A,#01
-       RET    C
-       INC    HL
-       INC    HL
-       INC    HL
-       LD     D,#00
-LOOK2  CALL   #198B
-       RET    NC
-       JR     LOOK1
+       LD     A,(HL)          ; HL points after the current statement
+       CP     #3A             ; If the next char is ':', jump forward
+       JR     Z,LOOK2         ; to consider next statement in the line
 
-REC_EN DEC    HL
+; Loop for each new line in the program
+
+LOOK1  INC    HL              ; Skip past the CR at end of each line
+       LD     A,(HL)          ; MSB of next line number or $FF marker
+       ADD    A,#01           ; An $FF marker will set the carry flag,
+       RET    C               ; return if found.
+       INC    HL              ; Step past line number and length bytes
+       INC    HL
+       INC    HL
+       LD     D,#00           ; Signal 'count statements to end of line'
+LOOK2  CALL   #198B           ; call EACH-STMT in the ROM to find the token
+       RET    NC              ; Return carry flag reset if found
+       JR     LOOK1           ; Else, loop for next line
+
+; The REC_ENTRY routine reclaims a FOR-NEXT data structure from the FOR/GOSUB
+; stack. It is called by the FOR and NEXT handlers.
+; On entry, HL points to the third byte of the 18-byte FOR entry.
+
+REC_EN DEC    HL              ; Step 2 bytes down
        DEC    HL
-       SCF
-       SBC    HL,SP
-       LD     B,H
+       SCF                    ; Include third byte for subtraction
+       SBC    HL,SP           ; Find amount of bytes between FOR entry and
+       LD     B,H             ; machine stack; transfer this to BC
        LD     C,L
-       INC    BC
-       ADD    HL,SP
-       EX     DE,HL
-       LD     HL,18
-       ADD    HL,DE
-       EX     DE,HL
-       LDDR
-       EX     DE,HL
+       INC    BC              ; Include the stack's end-marker byte ($00)
+       ADD    HL,SP           ; HL now points to the start of the area to be
+       EX     DE,HL           ; reclaimed; save this in DE
+       LD     HL,18           ; There are 18 bytes to be reclaimed,
+       ADD    HL,DE           ; add this distance to DE
+       EX     DE,HL           ; Swap source and destination
+       LDDR                   ; .. and copy over the bytes
+       EX     DE,HL           ; Swap pointers back
+       INC    HL              ; HL now points to top of the machine stack
+       LD     SP,HL           ; which has been moved up; set new stack pointer
+       INC    HL              ; Step past the return address for this routine
        INC    HL
-       LD     SP,HL
+       INC    HL              ; .. and STMT_RET
        INC    HL
-       INC    HL
-       INC    HL
-       INC    HL
-       LD     (23613),HL
-       RET
+       LD     (23613),HL      ; This will be the new ERR_SP
+       RET                    ; Done
 
-STMTAD RST    #18
-       LD     BC,(23635)
-       BIT    7,(IY+12)
-       JR     Z,OFFSET
-       LD     BC,(23641)
-OFFSET SBC    HL,BC
-       RET
+; The STMTAD routine returns the offset of the pointer to the current character
+; from PROG or E_LINE in HL.
 
-READ_3 RST    #20
-READ   CALL   CL01
-       RST    #18
-       LD     (23647),HL
-       LD     HL,(23639)
+STMTAD RST    #18             ; Get address of current character
+       LD     BC,(23635)      ; Fetch PROG
+       BIT    7,(IY+12)       ; Test bit 7 of PPC, it will be set when
+       JR     Z,OFFSET        ; executing a direct command
+       LD     BC,(23641)      ; in that case, offset is from E_LINE
+OFFSET SBC    HL,BC           ; Find the offset (carry reset from the RST)
+       RET                    ; Done
+
+; ------------------------
+; The READ command handler
+; ------------------------
+; It is entered at READ from the statement loop
+
+READ_3 RST    #20             ; Skip past ',' when handling 'READ a,b,...'
+READ   CALL   CL01            ; Call the Class-01 handler to consider the
+       RST    #18             ; variable to be assigned; save the pointer
+       LD     (23647),HL      ; from CH_ADD temporarily in X_PTR
+       LD     HL,(23639)      ; Get current DATA position from DATADD
        LD     A,(HL)
-       CP     #2C
-       JR     Z,READ_1
-       LD     E,#E4
-       CALL   LOOK_PROG
-       JP     C,#1E08
-READ_1 CALL   #0077
-       LD     A,(23611)
+       CP     #2C             ; Are we on a ',' in the DATA statement?
+       JR     Z,READ_1        ; Yes, go evaluating it
+       LD     E,#E4           ; Else, search the program from the current
+       CALL   LOOK_PROG       ; position for a DATA statement
+       JP     C,#1E08         ; If not found, report 'Out of DATA'.
+READ_1 CALL   #0077           ; Advance pointer and set CH_ADD
+       LD     A,(23611)       ; Save FLAGS
        PUSH   AF
-       CALL   SCANNING
-       CP     ","
-       JR     Z,RD_OK
+       CALL   SCANNING        ; Now call SCANNING to evaluate the expression
+                              ; statement in the DATA
+       CP     ","             ; The character after the expression must either
+       JR     Z,RD_OK         ; be a comma or end of statement (':' or CR)
        CALL   #2048
-       JP     NZ,#1C8A
-RD_OK  POP    AF
-       XOR    (IY+1)
-       AND    #40
-       JR     Z,READ_N
-       BIT    6,(IY+1)
-       JP     Z,#1C8A
-       RST    #28
-       DEFB   #2E
-       DEFB   #38
-READ_N CALL   LET
-       RST    #18
-       LD     (23639),HL
-       LD     HL,(23647)
-       LD     (IY+38),#00
-       LD     (23645),HL
-READ_2 RST    #18
-       CP     #2C
-       JR     Z,READ_3
-       RET
+       JP     NZ,#1C8A        ; Throw 'Nonsense in BASIC' otherwise
+RD_OK  POP    AF              ; Restore original FLAGS
+       XOR    (IY+1)          ; Compare with result from SCANNING
+       AND    #40             ; Bit 6 should match the variable's type
+       JR     Z,READ_N        ; Jump forward when they match
+       BIT    6,(IY+1)        ; Was the expression of string type?
+       JP     Z,#1C8A         ; Throw 'Nonsense in BASIC' if it is
+
+; The following code converts a numerical expression in the DATA statement
+; to a string. Thus it is possible to READ a number into a string variable,
+; which is a common mistake made in BASICODE programs. We'll tolerate it by
+; calling STR$ to convert the number to a string so we can READ it.
+
+       RST    #28             ; Enter calculator
+       DEFB   #2E             ; STR$ operation
+       DEFB   #38             ; end-calc
+READ_N CALL   LET             ; Call LET to assign the value to the variable
+       RST    #18             ; Get pointer to current DATA item again
+       LD     (23639),HL      ; Save this in DATADD
+       LD     HL,(23647)      ; Pick up pointer in X_PTR to READ statement
+       LD     (IY+38),#00     ; Clear X_PTR-hi
+       LD     (23645),HL      ; Restore CH_ADD pointer to READ statement
+READ_2 RST    #18             ; Test if we're currently on a ',' character;
+       CP     #2C             ; loop back if there are more variables
+       JR     Z,READ_3        ; to be READ
+       RET                    ; Done.
+
+; ---------------------------
+; The RESTORE command handler
+; ---------------------------
 
 RESTORE
-       CALL   #1E99
-REST_RUN
-       CALL   LN_ADDR
+       CALL   #1E99           ; Get line number after RESTORE or 0 in BC
+REST_RUN                      ; Note: BASICODE does NOT allow a line number!
+       CALL   LN_ADDR         ; Find address of line in HL
        DEC    HL
-       LD     (23639),HL
-       RET
+       LD     (23639),HL      ; Set DATADD to location before that
+       RET                    ; Done
 
-RUN    CALL   #1E67
-       LD     BC,#0000
+; -----------------------
+; The RUN command handler
+; -----------------------
+; This calls the ROM handler to set NEWPPC and NSPPC, then calls RESTORE above
+; and finally jumps into the CLEAR handler below
+
+RUN    CALL   #1E67           ; Call GO-TO in the ROM to set NEWPPC and NSPPC
+       LD     BC,#0000        ; Also do a RESTORE 0
        CALL   REST_RUN
-       JR     CL_RUN
+       JR     CL_RUN          ; Jump into CLEAR below
 
-CLEAR  CALL   SET_PPC
-CL_RUN RST    #18
-       CALL   #2048
-       LD     BC,(23730)
-       JR     Z,CLR_1
-       CP     ","
-       JR     Z,CLR_1
-       CALL   EX_1NUM
-       CALL   #1E99
-CLR_1  PUSH   BC
-       RST    #18
-       CP     ","
-       CALL   Z,#0020
-       LD     HL,100
-       CALL   #2048
-       JR     Z,CLR_2
-       CALL   EX_1NUM
-       CALL   #1E99
-       LD     H,B
+; -------------------------
+; The CLEAR command handler
+; -------------------------
+; In BASICODE, CLEAR accepts two parameters (which may both be defaulted).
+; The full syntax is: CLEAR [new RAMTOP],[string space]
+; [String space] deserves an explanation. The upper part of memory, which
+; expands downwards, is laid out as follows:
+;
+;        <-------- <----------       <-STRPTR 
+; ------+---------+-----------+-----+--------+-----+---------+
+; Spare | Machine | FOR/GOSUB | $00 | String | $3E | Machine |
+;       |  stack  |   stack   |     | space  |     |  code   |
+; ------+---------+-----------+-----+--------+-----+---------+
+;                 ^              ^              ^
+;                 SP            STRS          RAMTOP
+;
+; The new area 'String space' is used to store the content of string variables;
+; their entries in the VARS area only contain a pointer to it. 
+; The String space has a fixed size, set by the second parameter in a CLEAR
+; statement. The running pointer STRPTR runs downwards as more strings are
+; added to it, until it hits the bottom pointed to by STRS. At this point, the
+; Garbage collect routine is called which attempts to clean up the area by
+; removing any strings not being pointed to by variables. If, after this
+; procedure, there is still insufficient string space available then the error
+; 'S Out of string space' is thrown and you should increase the string space.
+; This way of manipulating strings using pointers (as opposed to storing them
+; literally in the variables area) reduces a lot of time-consuming shuffling of
+; bytes in the VARS area. It has its disadvantage in that you have to guess how
+; much space you will need for all strings together (not counting literal
+; strings in the program). BASICODE caters for this by letting the application
+; program specify the amount of space in the variable A before it jumps to the
+; initialisation code at line 20.
+
+CLEAR  CALL   SET_PPC         ; Prepare for a shadow ROM return (CLEAR #)
+CL_RUN RST    #18             ; Get current character
+       CALL   #2048           ; Are we at the end of the statement?
+       LD     BC,(23730)      ; Pre-fetch RAMTOP
+       JR     Z,CLR_1         ; Jump if we are indeed at the end
+       CP     ","             ; Is the next character a comma?
+       JR     Z,CLR_1         ; Yes, jump
+       CALL   EX_1NUM         ; Evaluate the new RAMTOP value
+       CALL   #1E99           ; Fetch it into BC
+CLR_1  PUSH   BC              ; Save new RAMTOP
+       RST    #18             ; Get current character
+       CP     ","             ; Is it a comma?
+       CALL   Z,#0020         ; If yes, skip it
+       LD     HL,100          ; Load HL with default string space of 100
+       CALL   #2048           ; At the end of the statement?
+       JR     Z,CLR_2         ; Yes, jump
+       CALL   EX_1NUM         ; Evaluate string space argument
+       CALL   #1E99           ; Fetch it into BC
+       LD     H,B             ; Transfer to HL
        LD     L,C
-CLR_2  EX     (SP),HL
-       PUSH   HL
-       LD     DE,(23627)
-       LD     HL,(23641)
-       DEC    HL
-       CALL   #19E5
-       CALL   #0D6B
-       LD     HL,(23653)
-       LD     DE,50
+CLR_2  EX     (SP),HL         ; Exchange new RAMTOP and string space
+       PUSH   HL              ; Save RAMTOP again
+       LD     DE,(23627)      ; VARS
+       LD     HL,(23641)      ; E_LINE
+       DEC    HL              ; Leave VARS end marker
+       CALL   #19E5           ; Reclaim VARS area
+       CALL   #0D6B           ; Do CLS
+       LD     HL,(23653)      ; STKEND
+       LD     DE,50           ; Take a margin of 50 bytes above STKEND
        ADD    HL,DE
-       LD     B,H
+       LD     B,H             ; Copy to BC
        LD     C,L
-       POP    DE
-       SBC    HL,DE
-       JP     NC,#1EDA
-       LD     HL,(23732)
-       AND    A
-       SBC    HL,DE
-       JP     C,#1EDA
-       EX     DE,HL
-       POP    DE
-       PUSH   HL
-       SBC    HL,DE
-       JR     C,RPRT_S
-       SBC    HL,BC
+       POP    DE              ; Retrieve new RAMTOP
+       SBC    HL,DE           ; New RAMTOP must be above STKEND + margin
+       JP     NC,#1EDA        ; Else report 'RAMTOP no good'
+       LD     HL,(23732)      ; P_RAMT, end of physical RAM
+       AND    A               ; Compare against new RAMTOP; throw error if new
+       SBC    HL,DE           ; RAMTOP would be above P_RAMT (unlikely to
+       JP     C,#1EDA         ; happen on a 48K machine...)
+       EX     DE,HL           ; new RAMTOP goes to HL
+       POP    DE              ; Retrieve string space
+       PUSH   HL              ; Save new RAMTOP again
+       SBC    HL,DE           ; Decrease RAMTOP by string space requested
+       JR     C,RPRT_S        ; Error if this comes out negative (can happen?)
+       SBC    HL,BC           ; Now compare to STKEND + margin
        ADD    HL,BC
-RPRT_S JP     C,#1F15
-       LD     (STRS),HL
-       LD     (HL),#00
-       POP    DE
-       LD     (23730),DE
-       LD     (STRPTR),DE
-       POP    DE
-       POP    BC
-       LD     SP,HL
-       PUSH   BC
-       LD     (23613),SP
-       EX     DE,HL
-       JP     (HL)
+RPRT_S JP     C,#1F15         ; If they clash, report 'S Out of string space'
+       LD     (STRS),HL       ; This is stored in the variable STRS
+       LD     (HL),#00        ; The bottom marker for the new FOR/GOSUB stack
+       POP    DE              ; Retrieve new RAMTOP
+       LD     (23730),DE      ; Store it in the system variable
+       LD     (STRPTR),DE     ; Also, set STRPTR (it will run downwards)
+       POP    DE              ; Pop return address to STMT_RET
+       POP    BC              ; This is the error return - usually MAIN_4
+       LD     SP,HL           ; Bottom of new machine stack
+       PUSH   BC              ; Push error return handler
+       LD     (23613),SP      ; and set ERR_SP
+       EX     DE,HL           ; Return address STMT_RET to HL
+       JP     (HL)            ; and exit by jumping to it
 
-GOTO   CP     "*"
-       JR     Z,ON
-       CALL   EX_1NUM
-       JP     #1E67
-ON     RST    #20
-       CALL   EX_1NUM
-       CP     ";"
-       JP     NZ,#1C8A
-       CALL   #1E94
-ON_LP  PUSH   AF
-       RST    #20
-       CALL   EX_1NUM
-       CALL   #1E99
-       POP    AF
-       DEC    A
-       JP     Z,#1E6A
-       LD     C,A
-       RST    #18
-       CP     ","
-       LD     A,C
-       JR     Z,ON_LP
-       AND    A
-       RET
+; -----------------------------------
+; The GOTO and GOSUB command handlers
+; -----------------------------------
+; There is no ON..GOTO/GOSUB command in ZX Basic. They will take expressions as
+; arguments, which by itself is a powerful feature, but in BASICODE only
+; literal arguments are allowed. If you want to take different branches as
+; result of an expression, you should use ON expr GOTO/GOSUB l1,l2,l3,..
+; where l1 is taken if expr evaluates to 1, l2 if expr = 2, and so on.
+; In BASICODE, expr must not exceed the number of branches given so expr = 4
+; would be illegal when there are only 3 branches. In reality, most BASICS
+; then simply continue at the next statement without branching. And indeed,
+; many BASICODE programmers did just assume that :-(.
+; To implement ON..GOTO/GOSUB, we use GOTO/GOSUB with a special syntax:
+;
+;   GOTO/GOSUB *expression;line1,line2,line3...
+;
+; Thus expression=1 does a GOTO or GOSUB to line1, expression=2 to line2,
+; and so on. There is no limit on the number of branches except for the line
+; length, which in BASICODE is just 60 characters...
 
-GOSUB  CALL   GOTO
-       RET    NC
-       RST    #18
-       CALL   #2048
-       LD     DE,#0200
-       CALL   NZ,#198B
-       POP    DE
-       CALL   STMTAD
-       EX     (SP),HL
-       LD     BC,(23621)
-       PUSH   BC
-       LD     B,(IY+13)
-       LD     C,#ED
-       PUSH   BC
-       PUSH   HL
-       LD     (23613),SP
-       PUSH   DE
-       JP     #1F02
+; The entry point GOTO is jumped to from the main statement loop, and also
+; called from GOSUB. The carry flag is returned set if the expression in the
+; ON syntax successfully matched a line number specified.
 
-RETURN LD     HL,4
+GOTO   CP     "*"             ; Is current character a '*'?
+       JR     Z,ON            ; Yes, handle ON..GOTO/GOSUB
+       CALL   EX_1NUM         ; Else, evaluate a single line number
+       JP     #1E67           ; Jump to the ROM's GOTO handler (this will
+                              ; return carry set
+; Handle ON syntax
+
+ON     RST    #20             ; Skip-over the '*'
+       CALL   EX_1NUM         ; Evaluate the expression
+       CP     ";"             ; It must be followed by a semicolon
+       JP     NZ,#1C8A        ; report 'Nonsense in BASIC' otherwise
+       CALL   #1E94           ; Get result of expression in A
+
+; Now loop for a matching line number 'A' times
+
+ON_LP  PUSH   AF              ; Save the counter
+       RST    #20             ; Next character
+       CALL   EX_1NUM         ; Evaluate the line number
+       CALL   #1E99           ; This goes to BC
+       POP    AF              ; retrieve counter
+       DEC    A               ; Decrement it (it should be in range 1-255)
+       JP     Z,#1E6A         ; If it reaches zero, exit setting NEWPPC/NSPPC
+       LD     C,A             ; Save the counter briefly
+       RST    #18             ; Consider current character
+       CP     ","             ; Is it a comma?
+       LD     A,C             ; Restore counter
+       JR     Z,ON_LP         ; Loop back for next line number
+       AND    A               ; Else, signal 'no matching line number found'
+       RET                    ; Done
+
+; GOSUB first calls GOTO to evaluate the destination (this handles ON too).
+; If there is a valid destination, the following data is pushed onto the GOSUB
+; stack:
+;
+; Byte  0  : $EB (GOSUB marker)
+; Byte  1  : Statement number after GOSUB
+; Bytes 2-3: Line number of GOSUB statement
+; Bytes 4-5: Offset of statement after GOSUB, relative to PROG/E_LINE
+
+GOSUB  CALL   GOTO            ; Carry flag will be set with a valid destination
+       RET    NC              ; Else, exit and continue with next statement
+       RST    #18             ; Get current character
+       CALL   #2048           ; Have we reached the end of the statement?
+       LD     DE,#0200        ; Set D to 2 for 'next statement'
+       CALL   NZ,#198B        ; If not at the end, skipover any excess
+                              ; characters (in case of ON..GOSUB).
+       POP    DE              ; Pop return address STMT_RET
+       CALL   STMTAD          ; Get offset to PROG/E_LINE in HL
+       EX     (SP),HL         ; Exchange this with error return address
+       LD     BC,(23621)      ; Now push current line number on the stack
+       PUSH   BC
+       LD     B,(IY+13)       ; Include statement number (second byte)
+       LD     C,#ED           ; and the marker (first byte)
+       PUSH   BC
+       PUSH   HL              ; Push error return address again
+       LD     (23613),SP      ; and set ERR_SP
+       PUSH   DE              ; Finally push STMT_RET again
+       JP     #1F02           ; Exit to test if enough memory available
+
+; RETURN works the opposite way - it gets the destination from the GOSUB stack
+; Note that unfinished FOR-NEXT loops in the subroutine are also reclaimed!
+
+RETURN LD     HL,4            ; Skipover statement and error return addresses
        ADD    HL,SP
-RET_LP LD     A,(HL)
-       AND    A
-       JP     Z,#1F38
-       CP     #ED
-       JR     Z,RET_FND
-       LD     DE,18
+RET_LP LD     A,(HL)          ; Test the marker byte of the top stack entry
+       AND    A               ; A zero marks the bottom of the stack -
+       JP     Z,#1F38         ; throw 'RETURN without GOSUB'
+       CP     #ED             ; Is it the GOSUB marker?
+       JR     Z,RET_FND       ; Yes, jump forward
+       LD     DE,18           ; Else, it must be a FOR entry - skip 18 bytes
        ADD    HL,DE
-       JR     RET_LP
-RET_FN INC    HL
-       PUSH   HL
-       CALL   JUMP
-       POP    HL
-       LD     DE,5
-       ADD    HL,DE
-       POP    DE
-       POP    BC
-       LD     SP,HL
-       PUSH   BC
-       LD     (23613),SP
-       EX     DE,HL
-       JP     (HL)
+       JR     RET_LP          ; loop back
 
-DEF_FN BIT    7,(IY+12)
+; A return address has been found - set the relevant system variables and
+; clean up the stack
+
+RET_FN INC    HL              ; Point to statement #, line #, and offset
+       PUSH   HL              ; Save pointer
+       CALL   JUMP            ; Set the relevant system variables
+       POP    HL              ; Retrieve pointer
+       LD     DE,5            ; Skip 5 bytes to next entry
+       ADD    HL,DE
+       POP    DE              ; Pop STMT_RET
+       POP    BC              ; and error return
+       LD     SP,HL           ; Set new machine stack pointer
+       PUSH   BC              ; Save error return again
+       LD     (23613),SP      ; and set ERR_SP
+       EX     DE,HL           ; STMT_RET goes to HL
+       JP     (HL)            ; and exit by jumping to it
+
+; --------------------------
+; The DEF FN command handler
+; --------------------------
+; DEF FN is handled very differently from the ROM. FNs are stored as variables
+; in the VARS area. Thus, the DEF FN statement has to be actually executed for
+; a function to be recognised.
+;
+; The format of a function in the VARS area is as follows:
+;
+; +------+---+--------+--------+------+-----+--------+--------+
+; | name | 0 | len-lo | len-hi | args | 80h | ptr-lo | ptr-hi |
+; +------+---+--------+--------+------+-----+--------+--------+
+;
+; name has bit 7 set, bit 6 is set for a numeric function and reset for a
+; string function. The name can have max 255 chars and is null terminated.
+; args is a local variable storage (terminated by 80h).
+; ptr is pointer to the function definition, relative to PROG.
+;
+; Note that LEFT$, MID$ and RIGHT$ are also implemented as FN functions.
+
+DEF_FN BIT    7,(IY+12)       ; The DEF FN cannot be in a direct command
        JR     Z,DEFFN1
-       CALL   ERROR
+       CALL   ERROR           ; else, throw report 'T Illegal direct'
        DEFB   #1C
-DEFFN1 LD     C,#80
-       LD     (23647),HL
-       CALL   LOOKV1
-       JP     NZ,#1C8A
-       LD     C,B
-       LD     B,#00
-       JR     C,DEFFN2
-       PUSH   BC
-       SBC    HL,BC
-       PUSH   HL
-       CALL   NEXT_ONE
-       POP    DE
-       CALL   #19E5
-       POP    BC
-DEFFN2 PUSH   BC
+DEFFN1 LD     C,#80           ; Set bit 7 for FN functions
+       LD     (23647),HL      ; Save CH_ADD temporarily in X_PTR
+       CALL   LOOKV1          ; Look for the name in the VARS area
+       JP     NZ,#1C8A        ; It must be followed by a '('
+       LD     C,B             ; Copy the length of the name to C
+       LD     B,#00           ; Now BC = length of name
+       JR     C,DEFFN2        ; Jump if there is an existing FN with same name
+       PUSH   BC              ; Save length
+       SBC    HL,BC           ; Point to start of existing FN
+       PUSH   HL              ; Save pointer
+       CALL   NEXT_ONE        ; Find next variable in HL
+       POP    DE              ; Retrieve pointer to existing FN
+       CALL   #19E5           ; Call RECLAIM to remove it
+       POP    BC              ; Retrieve BC
+DEFFN2 PUSH   BC              ; Save length of name
+       INC    BC              ; Increment by three for the null terminator and
+       INC    BC              ; two length bytes
        INC    BC
-       INC    BC
-       INC    BC
-       RST    #30
-       LD     HL,(23647)
-       LD     A,(HL)
-       AND    #1F
-       LD     C,A
-       LD     A,(23611)
-       AND    #C0
-       OR     C
-DEFFN3 LD     (DE),A
-       INC    DE
-       CALL   #28AB
-       CALL   #2C88
-       SET    5,A
-       JR     C,DEFFN3
-       XOR    A
+       RST    #30             ; Allocate this space in WORKSP
+       LD     HL,(23647)      ; Retrieve CH_ADD
+       LD     A,(HL)          ; Get first letter of name
+       AND    #1F             ; Keep only bits 0 to 4
+       LD     C,A             ; Copy this to C
+       LD     A,(23611)       ; Fetch FLAGS (bit 6 is 0 for string, 1 numeric)
+       AND    #C0             ; Keep bits 6 and 7 (bit 7 will always be 1)
+       OR     C               ; Mask in bits 0-4 of first letter
+
+; A loop is entered to copy the function's name into the workspace
+
+DEFFN3 LD     (DE),A          ; Store a character
+       INC    DE              ; Advance pointer
+       CALL   #28AB           ; Call FN-SKPOVR to get next non-space character
+       CALL   #2C88           ; Test next character for alphanumeric code
+       SET    5,A             ; Make any subsequent character lowercase
+       JR     C,DEFFN3        ; Loop as long as it's alphanumeric
+       XOR    A               ; Terminate the name with a null byte
        LD     (DE),A
-       RST    #20
-       CP     ")"
-       JR     Z,DEFFN4
-PRM_LP CALL   #2C8D
-       JP     NC,#1C8A
-       LD     BC,#0001
+       RST    #20             ; Advance to next character
+       CP     ")"             ; A closing bracket indicates no parameters -
+       JR     Z,DEFFN4        ; jump forward
+
+; The following loop parses the formal parameters of the function, creating
+; space in WORKSP for them as we go
+
+PRM_LP CALL   #2C8D           ; The first letter must be alphabetic
+       JP     NC,#1C8A        ; else give 'Nonsense in BASIC'
+       LD     BC,#0001        ; One extra space
        RST    #30
-       PUSH   DE
-PRM_CH OR     #20
-       LD     (DE),A
-       RST    #30
-       RST    #20
-       CALL   #2C88
+       PUSH   DE              ; Save pointer
+PRM_CH OR     #20             ; Convert to lowercase
+       LD     (DE),A          ; Enter character
+       RST    #30             ; Make another space
+       RST    #20             ; Skip to next character
+       CALL   #2C88           ; Loop as long as it's alphanumeric
        JR     C,PRM_CH
-       EX     DE,HL
-       LD     (HL),#00
-       POP    HL
-       CP     "$"
-       JR     NZ,DEFSPC
-       RES    6,(HL)
-       RST    #20
-DEFSPC LD     BC,#0005
-       RST    #30
+       EX     DE,HL           ; Destination address goes to HL
+       LD     (HL),#00        ; Terminate the name with a null byte
+       POP    HL              ; Retrieve pointer to first character
+       CP     "$"             ; Is it a string parameter?
+       JR     NZ,DEFSPC       ; No, skip
+       RES    6,(HL)          ; Else, clear bit 6 of first character to
+       RST    #20             ; indicate a string and skip the '$' character
+DEFSPC LD     BC,#0005        ; Now make 5 spaces for the value of the argument
+       RST    #30             ; which will be filled in when the FN is called
        RST    #18
-       CP     ","
-       JR     NZ,DEF_BR
-       RST    #20
-       JR     PRM_LP
-DEF_BR CP     ")"
-DEFFN4 JP     NZ,#1C8A
-       RST    #20
-       CP     "="
-       JR     NZ,DEFFN4
-       RST    #20
+       CP     ","             ; Are we on a comma?
+       JR     NZ,DEF_BR       ; No, skip
+       RST    #20             ; Else, skip the comma and loop back for another
+       JR     PRM_LP          ; parameter
+DEF_BR CP     ")"             ; The parameter list must be terminated by a
+DEFFN4 JP     NZ,#1C8A        ; closing bracket, else give 'Nonsense in BASIC'
+       RST    #20             ; Next character
+       CP     "="             ; .. which must be an equals sign
+       JR     NZ,DEFFN4       ; .. else report 'Nonsense in BASIC'
+       RST    #20             ; Advance to start of FN's expression
        LD     DE,(23635)
-       SBC    HL,DE
-       PUSH   HL
-       LD     BC,#0003
-       RST    #30
-       EX     DE,HL
-       POP    DE
-       LD     (HL),#80
+       SBC    HL,DE           ; Make the pointer relative to PROG
+       PUSH   HL              ; Save it for later
+       LD     BC,#0003        ; Three spaces are needed for the pointer and the
+       RST    #30             ; $80 end marker for the FN's arguments
+       EX     DE,HL           ; The pointer to this space goes to HL
+       POP    DE              ; Retrieve offset of expression to PROG
+       LD     (HL),#80        ; Enter the $80 end marker
        INC    HL
-       LD     (HL),E
+       LD     (HL),E          ; And the pointer to the FN's expression
        INC    HL
        LD     (HL),D
-       INC    HL
-       LD     DE,(23649)
+       INC    HL              ; Point past last byte of space created
+       LD     DE,(23649)      ; Start of WORKSP
        AND    A
-       SBC    HL,DE
-       PUSH   HL
+       SBC    HL,DE           ; Find the length in HL
+       PUSH   HL              ; Save it and copy to BC
        LD     B,H
        LD     C,L
-       LD     HL,(23641)
-       DEC    HL
-       CALL   #1655
-       POP    BC
+       LD     HL,(23641)      ; E_LINE
+       DEC    HL              ; Point to last byte of VARS area
+       CALL   #1655           ; Now make the required space
+       POP    BC              ; Get a copy of the length
        PUSH   BC
-       LD     HL,(23651)
-       DEC    HL
-       LDDR
+       LD     HL,(23651)      ; STKBOT
+       DEC    HL              ; Point to last byte in WORKSP
+       LDDR                   ; Now copy over the FN's definition to VARS
        EX     DE,HL
-       INC    HL
-       POP    DE
-       POP    BC
-       ADD    HL,BC
-       INC    HL
-       EX     DE,HL
-       SCF
-       SBC    HL,BC
+       INC    HL              ; Now HL points to first byte of FN in VARS
+       POP    DE              ; Retrieve length of space
+       POP    BC              ; Retrieve length of name
+       ADD    HL,BC           ; Skip to end of name
+       INC    HL              ; .. and terminating null byte
+       EX     DE,HL           ; Length of space to HL
+       SCF                    ; The length of the name plus null byte should
+       SBC    HL,BC           ; be discounted from the total length
+       DEC    HL              ; Also discount the two length bytes themselves
        DEC    HL
-       DEC    HL
-       EX     DE,HL
-       LD     (HL),E
+       EX     DE,HL           ; Swap length with pointer
+       LD     (HL),E          ; Enter reduced length after name
        INC    HL
        LD     (HL),D
-       RST    #18
-       LD     DE,#0200
-       JP     #198B
+       RST    #18             ; Get pointer to current character
+       LD     DE,#0200        ; Signal 'skip to next statement'
+       JP     #198B           ; .. and exit via EACH-STMT
 
-LPRINT LD     A,#03
+; ------------------------------------
+; The PRINT and LPRINT command handler
+; ------------------------------------
+; These work similar to the ROM's handlers except that our own expression
+; evaluator is called.
+
+LPRINT LD     A,#03           ; LPRINT entry point; use stream #3
        JR     PRINT1
-PRINT  LD     A,#02
-PRINT1 CALL   #1601
-       CALL   #0D4D
+PRINT  LD     A,#02           ; PRINT entry point; use stream #2
+PRINT1 CALL   #1601           ; Select this stream
+       CALL   #0D4D           ; Set temporary colours
 PRINT2 RST    #18
        CALL   #2045
        JR     Z,PRINT4
@@ -1572,10 +1849,12 @@ S_NEXT PUSH   BC
        RST    #20
        JP     S_LP1
 
-SF_SUB RST    #20
-       LD     C,#80
-       CALL   LOOKV1
-       JP     C,#2812
+; Scan for FN function
+
+SF_SUB RST    #20             ; Next character
+       LD     C,#80           ; Signal 'look for FN type variable'
+       CALL   LOOKV1          ; Look up the function in the VARS area
+       JP     C,#2812         ; If not found, report 'FN without DEF'
        PUSH   BC
        EX     DE,HL
        RST    #20
@@ -1660,6 +1939,7 @@ SF_MIS JP     NZ,#288B
        RST    #20
        JP     CONT2
 
+;------------------------------------------------------------------------------
 ; LOOKVARS routine
 ; The format used by the BEXT interpreter for storing variables differs
 ; significantly from the Spectrum's interpreter's, since we allow names
@@ -1687,106 +1967,155 @@ SF_MIS JP     NZ,#288B
 ; args is a local variable storage (terminated by 80h)
 ; ptr is pointer to the function definition, relative to PROG
 
+; Returns:
+; - when 'variable not found':
+;   Carry flag set
+;   Zero flag set when search was for an array or FN function
+;   HL points to the first character of the requested name.
+;
+; - when 'variable found':
+;   Carry flag reset
+;   Zero flag set when the search was for an array or FN function
+;   HL points to the location after the variable's name (the null byte).
+;   DE points to the first character of the requested name.
+;------------------------------------------------------------------------------
+
 LOOKVARS
-       LD     C,#00
-LOOKV1 RST    #18
-       CALL   #2C8D
-       JR     NC,LV_RPC
-       PUSH   HL
-       AND    #1F
-       OR     C
+       LD     C,#00           ; Normal entry point - clear the C register
+
+; The entry point below is used by DEFFN and FN with C holding $80
+
+LOOKV1 RST    #18             ; get first character
+       CALL   #2C8D           ; it must be alphabetic
+       JR     NC,LV_RPC       ; else report 'Nonsense in BASIC'.
+       PUSH   HL              ; save address of first character
+       AND    #1F             ; first letter range is now $01-$1A
+       OR     C               ; mask in any 'type' bits in C
        LD     C,A
-       LD     B,#01
-V_CHAR RST    #20
-       CALL   #2C88
-       JR     NC,V_TEST
-       INC    B
-       JR     NZ,V_CHAR
+       LD     B,#01           ; initialise name counter to 1.
+V_CHAR RST    #20             ; loop for next character
+       CALL   #2C88           ; which has to be alphanumeric
+       JR     NC,V_TEST       ; if not, skip out of the loop
+       INC    B               ; increment character count
+       JR     NZ,V_CHAR       ; but do not allow > 255 characters!
 LV_RPC RST    8
-       DEFB   #0B
-V_TEST CP     #24
-       JR     NZ,V_ARRAY
-       RES    6,(IY+1)
-       RST    #20
-       CP     #28
-       JR     Z,V_SEARCH
-       SET    5,C
-       JR     V_FN
-V_ARRAY
-       SET    6,(IY+1)
-       SET    6,C
-       CP     #28
-       JR     Z,V_SEARCH
-       SET    5,C
-V_FN   LD     A,(#5C0C)
+       DEFB   #0B             ; Report C - 'Nonsense in BASIC'
+V_TEST CP     #24             ; check for '$'
+       JR     NZ,V_ARRAY      ; skip if not string
+       RES    6,(IY+1)        ; else, signal 'string variable, array or FN'.
+       RST    #20             ; get next character
+       CP     #28             ; is it '(' ?
+       JR     Z,V_SEARCH      ; yes, go searching for string arrays and FNs
+       SET    5,C             ; signal 'simple string variable'
+       JR     V_FN            ; jump forward
+V_ARRAY                       
+       SET    6,(IY+1)        ; signal 'numeric variable, array or FN'
+       SET    6,C             ; look only for this numeric types
+       CP     #28             ; now test for '('
+       JR     Z,V_SEARCH      ; it's a numeric array or FN, go searching
+       SET    5,C             ; signal 'simple numeric variable'
+
+; At this point, we are searching for simple numeric or string variables.
+; However, when evaluating a user DEFined FN function, we must first look for
+; any matching arguments before searching the variables area. In this case,
+; DEFADD will point to the FN's parameter area which is laid out in memory as
+; a 'local' variables area (terminated by a $80 byte). When not evaluating a
+; a FN function, DEFADD-hi will be zero.
+
+V_FN   LD     A,(#5C0C)       ; Get DEFADD-hi
        AND    A
-       JR     Z,V_SEARCH
-       LD     HL,V_RETAD
-       EX     (SP),HL
-       PUSH   HL
-       LD     HL,(#5C0B)
-       JR     V_EACH
+       JR     Z,V_SEARCH      ; If zero, just go searching VARS area
+       LD     HL,V_RETAD      ; V_RETAD is used as return point after searching
+       EX     (SP),HL         ; the FN's arguments, put this on the stack
+       PUSH   HL              ; Save the pointer to the first character as well
+       LD     HL,(#5C0B)      ; Get the pointer to the FN's parameter area
+       JR     V_EACH          ; Now go searching the FN's arguments first
+
+; After searching the parameter area, come here
+
 V_RETAD
-       RET    NC
-       PUSH   HL
+       RET    NC              ; Return if a match found in the FN's arguments
+       PUSH   HL              ; Save pointer to first character again
+
+; Now search the variables area
+
 V_SEARCH
-       LD     HL,(#5C4B)
-V_EACH LD     A,(HL)
-       CP     #80
-       JR     Z,V_80
-       CP     C
-       JR     NZ,V_NEXT
-       POP    DE
+       LD     HL,(#5C4B)      ; VARS
+V_EACH LD     A,(HL)          ; Get first character of variable
+       CP     #80             ; A byte value of $80 marks the end of the area
+       JR     Z,V_80          ; (either VARS or FN's arguments)
+       CP     C               ; Match with first character of requested name
+       JR     NZ,V_NEXT       ; and type; skip if no match
+       POP    DE              ; Retrieve pointer to requested name in DE
        PUSH   DE
-       PUSH   BC
-       PUSH   HL
-       DEC    B
-       JR     Z,V_CHECK
+       PUSH   BC              ; Save name counter & type
+       PUSH   HL              ; Save pointer to first character in VARS
+       DEC    B               ; One less character to match now
+       JR     Z,V_CHECK       ; skip past the loop for final check
 V_MATCH
-       INC    HL
+       INC    HL              ; Increment pointer in VARS
 V_SP   INC    DE
-       LD     A,(DE)
+       LD     A,(DE)          ; Get next character from requested name
        CP     #21
-       JR     C,V_SP
-       OR     #20
-       CP     (HL)
-       JR     NZ,V_PTR
-       DJNZ   V_MATCH
+       JR     C,V_SP          ; Skip over any spaces and control codes
+       OR     #20             ; Convert any upper case to lower case
+       CP     (HL)            ; Now match with next character from variable
+       JR     NZ,V_PTR        ; skip if no match
+       DJNZ   V_MATCH         ; loop for all characters
+
+; A final check is to be made to see if the end of the name has been reached -
+; this is marked by a zero byte.
+
 V_CHECK
-       INC    HL
+       INC    HL              ; Next character
        LD     A,(HL)
-       AND    A
-       JR     Z,V_FOUND
-V_PTR  POP    HL
-       POP    BC
-V_NEXT CALL   NEXT_ONE
-       JR     V_EACH
-V_80   POP    HL
-       SCF
-       BIT    5,C
-       RET
+       AND    A               ; Test for zero
+       JR     Z,V_FOUND       ; We have a full match!
+V_PTR  POP    HL              ; else, restore pointer to first character
+       POP    BC              ; and restore name counter in B
+V_NEXT CALL   NEXT_ONE        ; Skip to next variable
+       JR     V_EACH          ; Loop back
+
+; We've come to the end of the VARS or FN's arguments area
+
+V_80   POP    HL              ; Retrieve pointer to requested name
+       SCF                    ; Signal 'variable not found'
+       BIT    5,C             ; Set zero flag for arrays and FN functions
+       RET                    ; Finished
+
+; A matching variable or FN argument has been found (carry flag reset here)
+; HL points to the location after the variables name (the null byte).
+
 V_FOUND
-       POP    BC
-       POP    BC
-       POP    DE
-       BIT    5,C
-       RET
+       POP    BC              ; Discard pointer to first character
+       POP    BC              ; Retrieve BC
+       POP    DE              ; DE points to requested name
+       BIT    5,C             ; Set zero flag for arrays and FN functions
+       RET                    ; Finished
+
+; The NEXT-ONE routine finds the next variable in the VARS area.
+; This routine is much shorter than its ROM counterpart, since it only has to
+; cater for variables and not line numbers!
+; It simply tests bit 5 of the first byte - if set, it's a simple numeric or 
+; string variable and the length after the name + null byte will be 5.
+; In case of arrays and FN functions, the next 2 bytes will contain the length
+; of the variable's body.
 
 NEXT_ONE
-       BIT    5,(HL)
-       PUSH   AF
-N_O_1  LD     A,(HL)
+       BIT    5,(HL)          ; A simple variable will have bit 5 set
+       PUSH   AF              ; Save the flag
+N_O_1  LD     A,(HL)          ; Now enter a loop to skip past the name
        INC    HL
-       AND    A
+       AND    A               ; it's terminated by a null byte
        JR     NZ,N_O_1
-       LD     DE,#0005
-       POP    AF
-       JR     NZ,N_O_2
-       LD     E,(HL)
+       LD     DE,#0005        ; Assume simple variable - 5 bytes
+       POP    AF              ; Retrieve flag
+       JR     NZ,N_O_2        ; Jump if indeed a simple variable
+       LD     E,(HL)          ; Else, get length from next 2 bytes
        INC    HL
        LD     D,(HL)
        INC    HL
-N_O_2  ADD    HL,DE
+N_O_2  ADD    HL,DE           ; Skip past the variable's body
        RET
 
 DESTAD
