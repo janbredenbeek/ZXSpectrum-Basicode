@@ -1024,7 +1024,7 @@ GOTO   CP     "*"             ; Is current character a '*'?
        JR     Z,ON            ; Yes, handle ON..GOTO/GOSUB
        CALL   EX_1NUM         ; Else, evaluate a single line number
        JP     #1E67           ; Jump to the ROM's GOTO handler (this will
-                              ; return carry set
+                              ; return carry set)
 ; Handle ON syntax
 
 ON     RST    #20             ; Skip-over the '*'
@@ -1266,46 +1266,72 @@ LPRINT LD     A,#03           ; LPRINT entry point; use stream #3
 PRINT  LD     A,#02           ; PRINT entry point; use stream #2
 PRINT1 CALL   #1601           ; Select this stream
        CALL   #0D4D           ; Set temporary colours
-PRINT2 RST    #18
-       CALL   #2045
-       JR     Z,PRINT4
-PRINT3 CALL   #204E
-       JR     Z,PRINT3
-       CALL   PR_ITEM
-       CALL   #204E
-       JR     Z,PRINT3
-       CALL   #2045
-       JR     NZ,PRINT3
-PRINT4 CP     #29
-       RET    Z
-PR_CR  LD     A,#0D
-       RST    #10
+
+; The following subroutine is also called from INPUT when there is a prompt
+; in braces, e.g. INPUT (A$);IN$. A$ is then treated as an expression to be
+; printed as prompt. This is strictly NOT allowed in BASICODE!
+
+PRINT2 RST    #18             ; Get current character
+       CALL   #2045           ; Any more to print?
+       JR     Z,PRINT4        ; No, exit
+PRINT3 CALL   #204E           ; Consider any positional characters (; , ')
+       JR     Z,PRINT3        ; Loop back for next item
+       CALL   PR_ITEM         ; Now print next item
+       CALL   #204E           ; Consider more positional characters
+       JR     Z,PRINT3        ; Loop back for next
+       CALL   #2045           ; Any more items?
+       JR     NZ,PRINT3       ; Yes, loop back
+PRINT4 CP     #29             ; End of loop, return when dealing with ")"..
+       RET    Z               ; .. in an INPUT prompt
+PR_CR  LD     A,#0D           ; Else, print a final CR at the end of a PRINT
+       RST    #10             ; statement (#204E drops out of the loop early)
        RET
+
+; Print a single item. Equivalent to PR-ITEM-1 in the ROM except it calls our
+; own expression evaluator
+
 PR_ITEM
-       RST    #18
-       CP     #AC
-       JR     NZ,PR_I2
-       CALL   NXT_2NUM
-       JP     #2007
-PR_I2  CP     #AD
-       JR     NZ,PR_I3
-       RST    #20
-       CALL   EX_1NUM
-       JP     #2019
-PR_I3  CALL   CO_T3
-       RET    NC
-       CALL   STR_ALT
-       RET    NC
-       CALL   SCANNING
-       JP     #2032
+       RST    #18             ; Get current character
+       CP     #AC             ; Is it 'AT'?
+       JR     NZ,PR_I2        ; No, skip
+       CALL   NXT_2NUM        ; Get AT arguments
+       JP     #2007           ; Leave the rest to the ROM
+PR_I2  CP     #AD             ; Is it 'TAB'?
+       JR     NZ,PR_I3        ; No, skip
+       RST    #20             ; Advance to next character
+       CALL   EX_1NUM         ; Get TAB argument
+       JP     #2019           ; Leave the rest to the ROM
+PR_I3  CALL   CO_T3           ; Handle any colour items
+       RET    NC              ; Return if success
+       CALL   STR_ALT         ; Consider any '#stream' items
+       RET    NC              ; Return if dealt with it
+       CALL   SCANNING        ; Call the expression evaluator for anything else
+       JP     #2032           ; and jump into the ROM to do actual PRINTing
+
+; Consider '#stream' in PRINT or INPUT
+; Returns carry reset if such an item has been handled
 
 STR_ALT
-       CP     #23
+       CP     #23             ; Is the current character a '#'?
        SCF
-       RET    NZ
-       RST    #20
-       CALL   EX_1NUM
-       JP     #207C
+       RET    NZ              ; If not, return carry set
+       RST    #20             ; Advance to next character
+       CALL   EX_1NUM         ; Evaluate the number after '#'
+       JP     #207C           ; Jump to the ROM to finish handling
+
+; -------------------------
+; The INPUT command handler
+; -------------------------
+; INPUT is handled slightly different from the ROM. BASICODE expects an input
+; prompt to appear at the current PRINT position, hence in the upper part of
+; the screen. To facilitate this, we use default stream #2 which calls an input
+; routine in our 42-column screen driver. This prints a flashing cursor at the
+; current position while waiting for a keypress.
+; Note: BASICODE-3 is much more restrictive about INPUT prompts. The original
+; protocol did not allow a prompt string, in the second edition a single string
+; (like INPUT "Your name:";A$) was allowed. This implementation still allows
+; expressions as prompt when enclosed in braces (as in ZX BASIC); however in
+; BASICODE this is NOT allowed.
 
 INPUT  LD     A,#02
        CALL   #1601
