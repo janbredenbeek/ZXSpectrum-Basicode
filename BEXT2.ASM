@@ -1333,121 +1333,169 @@ STR_ALT
 ; expressions as prompt when enclosed in braces (as in ZX BASIC); however in
 ; BASICODE this is NOT allowed.
 
-INPUT  LD     A,#02
+INPUT  LD     A,#02           ; Select default stream #2 (channel 'S')
        CALL   #1601
-IN_IT1 CALL   #204E
+IN_IT1 CALL   #204E           ; Consider positional delimiters
        JR     Z,IN_IT1
-       CP     "("
-       JR     NZ,IN_IT2
-       RST    #20
-       CALL   PRINT2
+       CP     "("             ; Is the current character '('?
+       JR     NZ,IN_IT2       ; No, skip
+       RST    #20             ; Advance pointer
+       CALL   PRINT2          ; Handle expression enclosed in braces
        RST    #18
-       CP     ")"
-       JP     NZ,#1C8A
-       RST    #20
-       JP     IN_NX2
-IN_IT2 CALL   #2C8D
-       JP     NC,IN_NX1
-       CALL   CL01
-       LD     HL,(23645)
+       CP     ")"             ; Check for closing ')'
+       JP     NZ,#1C8A        ; Else report 'Nonsense in BASIC'
+       RST    #20             ; Advance pointer
+       JP     IN_NX2          ; Jump to end of loop
+
+; At this point either a variable name or a PRINTable item must follow.
+
+IN_IT2 CALL   #2C8D           ; Is the current character alphanumeric?
+       JP     NC,IN_NX1       ; No, skip
+       CALL   CL01            ; Call CLASS-01 handler to consider variable
+       LD     HL,(23645)      ; Save CH-ADD
        PUSH   HL
-       JR     IN_SAV
-IN_BAD SET    6,(IY+1)
-       LD     (IY+0),#FF
-       LD     (IY+82),#03
-       XOR    A
+       JR     IN_SAV          ; Jump forward
+
+; This code handles syntax errors when dealing with numeric input. 
+; A message 'INPUT ERROR; REENTER' is printed and the flow loops back to the
+; input handler.
+
+IN_BAD SET    6,(IY+1)        ; Signal 'numeric result to be expected'
+                              ; (A string input cannot have syntax errors)
+       LD     (IY+0),#FF      ; Clear any error
+       LD     (IY+82),#03     ; Reset scroll counter to avoid the 'scroll?'
+       XOR    A               ; prompt being printed before the message
        LD     DE,IN_MSG
-       CALL   #0C0A
-       POP    HL
+       CALL   #0C0A           ; Call PO-MSG to print the message
+       POP    HL              ; Retrieve original error handler
        LD     (23613),HL
-IN_SAV LD     HL,(23613)
+
+; The input handler proper enters here
+
+IN_SAV LD     HL,(23613)      ; Save current error handler
        PUSH   HL
-       LD     HL,IN_BAD
+       LD     HL,IN_BAD       ; Make IN_BAD the new error handler
        PUSH   HL
-       CALL   #16BF
-       LD     (IY+82),#02
-IN_ED  CALL   #15DE
-       LD     C,A
-       SCF
-       LD     A,(BRKFLG)
-       DEC    A
-       CALL   NZ,#1F54
-       JP     NC,#0D00
-       LD     A,C
-       CP     #0D
-       JR     Z,IN_SP
-       CALL   IN_CHAN_S
-       JR     NZ,IN_SP
-       CP     #20
+       CALL   #16BF           ; Clear WORKSP
+       LD     (IY+82),#02     ; Reset scroll counter
+
+; A loop is now entered to fetch each character in turn. When INPUTing from
+; channel 'S' (the default), the DELETE key ($7F) is also considered.
+
+IN_ED  CALL   #15DE           ; Call WAIT-KEY1 to fetch a character
+       LD     C,A             ; Save the code in C
+       SCF                    ; Preset the carry flag
+       LD     A,(BRKFLG)      ; Consider the BREAK flag; if this is set to 1
+       DEC    A               ; then call BREAK-KEY to test the BREAK status,
+       CALL   NZ,#1F54        ; else don't test it
+       JP     NC,#0D00        ; Report 'BREAK - CONT repeats' if BREAK pressed
+       LD     A,C             ; Restore character code
+       CP     #0D             ; Is it 'ENTER' (EOL code)?
+       JR     Z,IN_SP         ; Yes, jump
+       CALL   IN_CHAN_S       ; Are we dealing with channel 'S' (screen)?
+       JR     NZ,IN_SP        ; If not, jump to store it
+
+;; NOTE: Jump could be one instruction further as the flags are preserved so
+;; IN_CHAN_S doesn't have to be called again!
+
+       CP     #20             ; Reject any control characters
        JR     C,IN_ED
-       CP     #7F
-       JR     NZ,IN_SP
-       LD     HL,(23651)
-       LD     DE,(23649)
-       DEC    HL
-       SBC    HL,DE
-       ADD    HL,DE
-       JR     C,IN_ED
-       LD     BC,1
+       CP     #7F             ; This is the code for DELETE from the 42-column
+       JR     NZ,IN_SP        ; channel 'S' driver
+       LD     HL,(23651)      ; STKBOT
+       LD     DE,(23649)      ; WORKSP
+       DEC    HL              ; Step one byte down
+       SBC    HL,DE           ; An empty workspace will now set the carry flag
+       ADD    HL,DE           ; Restore HL
+       JR     C,IN_ED         ; Loop back if input line is already empty 
+       LD     BC,1            ; Else, reclaim one byte
        CALL   #19E8
-       LD     A,#7F
-       RST    #10
-       JR     IN_ED
-IN_SP  CALL   IN_CHAN_S
-       PUSH   AF
-       CALL   Z,#0010
-       POP    AF
-       LD     BC,1
+       LD     A,#7F           ; Now print the DELETE character - the 42-column
+       RST    #10             ; driver will rub out the previous character
+       JR     IN_ED           ; Loop back
+
+; It's time to store the newly fetched character
+
+IN_SP  CALL   IN_CHAN_S       ; Are we INPUTing from the screen?
+       PUSH   AF              ; Save A
+       CALL   Z,#0010         ; If yes, echo the character on the screen
+       POP    AF              ; Retrieve A
+       LD     BC,1            ; Make one space in the workspace
        RST    #30
-       LD     (DE),A
-       CP     #0D
+       LD     (DE),A          ; Enter the character
+       CP     #0D             ; Loop back unless it was ENTER/EOL
        JR     NZ,IN_ED
-       BIT    6,(IY+1)
-       JR     Z,IN_STR
-       CALL   IN_CHAN_S
-       JR     NZ,IN_WORK
-       LD     (23613),SP
-IN_WOR LD     HL,(23649)
+       BIT    6,(IY+1)        ; Test the numeric/string flag
+       JR     Z,IN_STR        ; Jump with string input
+       CALL   IN_CHAN_S       ; Dealing with screen input?
+       JR     NZ,IN_WORK      ; No, skip
+       LD     (23613),SP      ; Else, set error handler
+
+; A numeric input is to be parsed. We call EX_1NUM to effectively evaluate it;
+; thus it may be any valid numeric expression. Syntax errors are only trapped
+; when INPUTing from channel 'S' and will come back to IN_BAD which prints an
+; error message on the screen.
+
+IN_WOR LD     HL,(23649)      ; Set CH-ADD to start of WORKSP
        LD     (23645),HL
-       CALL   EX_1NUM
-       CP     #0D
-       JR     Z,IN_ASSIGN
-       RST    8
+       CALL   EX_1NUM         ; Now evaluate it as a numeric expression
+       CP     #0D             ; Check if the end has been reached
+       JR     Z,IN_ASSIGN     ; Go assigning if it has
+       RST    8               ; If not, throw 'Nonsense in BASIC'
        DEFB   #0B
-IN_STR LD     HL,(23651)
-       LD     DE,(23649)
-       SCF
-       SBC    HL,DE
-       LD     B,H
+
+; When dealing with string input, simply stack the string parameters.
+
+IN_STR LD     HL,(23651)      ; STKBOT
+       LD     DE,(23649)      ; WORKSP, also start of string
+       SCF                    ; Exclude the terminating CR
+       SBC    HL,DE           ; Form the length of the string in HL
+       LD     B,H             ; Transfer to BC
        LD     C,L
-       CALL   #2AB2
-IN_ASS POP    HL
-       POP    HL
+       CALL   #2AB2           ; Now stack the parameters
+IN_ASS POP    HL              ; Drop the IN_BAD error handler
+       POP    HL              ; Restore normal error handler
        LD     (23613),HL
-       POP    HL
+       POP    HL              ; Restore original CH-ADD
        LD     (23645),HL
-       CALL   LET
-       JR     IN_NX2
-IN_NX1 CALL   PR_ITEM
-IN_NX2 CALL   #204E
+       CALL   LET             ; Now call LET to do the assignment
+       JR     IN_NX2          ; Skip to next item
+
+; The following target handles any PRINTable items in the INPUT statement;
+; these include '#stream' to change the default stream in case of reading from
+; a storage medium (usually from GOSUB 540).
+
+IN_NX1 CALL   PR_ITEM         ; Call PR_ITEM to handle the PRINTable item
+IN_NX2 CALL   #204E           ; Loop back as long as there are more items
        JP     Z,IN_IT1
-       RET
+       RET                    ; Else, done with INPUT.
+
+; This routine is called on three occasions to check if INPUT is dealing with
+; channel 'S', i.e. the screen. If so, the zero flag is returned set.
 
 IN_CHAN_S
-       LD     C,A
-       LD     HL,(23633)
+       LD     C,A             ; Save A in C
+       LD     HL,(23633)      ; Get CURCHL
+       INC    HL              ; Step past the pointers to the output and input
+       INC    HL              ; routines
        INC    HL
        INC    HL
-       INC    HL
-       INC    HL
-       LD     A,(HL)
-       CP     "S"
-       LD     A,C
-       RET
+       LD     A,(HL)          ; Get the channel type letter
+       CP     "S"             ; An 'S' will set the zero flag
+       LD     A,C             ; Restore A
+       RET                    ; Done
 
-IN_MSG DEFB   #80
+; The following message is printed if a numeric input contains a syntax error.
+
+IN_MSG DEFB   #80             ; Marker byte required for PO-MSG
        DEFM   "INPUT ERROR; REENTER"
-       DEFB   #8D
+       DEFB   #8D             ; The message is terminated by CR with bit 7 set
+
+; -------------------
+; Colour Item Handler
+; -------------------
+; These routines are called from the Class 07, Class 09 and PR_ITEM routines.
+; Similar to ROM CO-TEMP-x handlers, except for the call to EX_1NUM.
 
 CO_T1  RST    #20
 CO_T2  CALL   CO_T3
@@ -1478,6 +1526,13 @@ CO_T4  SUB    #C9
        RST    #10
        RET
 
+; --------------------------
+; The CIRCLE command handler
+; --------------------------
+; A simple call to EX_1NUM for the 3rd argument, then jumps to the ROM handler.
+; Not used by BASICODE programs, though there used to be 'future plans' to
+; incorporate it in a new standard subroutine...
+
 CIRCLE RST    #18
        CP     ","
        JR     NZ,CO_RPC
@@ -1485,21 +1540,40 @@ CIRCLE RST    #18
        CALL   EX_1NUM
        JP     #232D
 
-PLOT   CALL   #2307
-       CALL   PL_SUB
-       JP     #0D4D
+; ----------------------------------
+; The PLOT and DRAW command handlers
+; ----------------------------------
+; This version allows PLOTting and DRAWing on the lower two rows of the screen,
+; thus the Y parameter range is 0 to 191 rather than 0 to 175. This way, we can
+; keep the aspect ratio at 4:3 while using the whole screen area for graphics.
+; I had to partially rewrite the PLOT and DRAW routine proper to accomodate
+; this, and it's still not fully implemented - only PLOT and DRAW with two 
+; arguments support this extended range (which is sufficient for the BASICODE-3
+; graphics subroutines fortunately!)
 
-PL_SUB LD     (23677),BC
-       LD     A,#BF
-       CALL   #22AC
-       JP     #22EC
+PLOT   CALL   #2307           ; PLOT: call STK-TO-BC to get the arguments in BC
+       CALL   PL_SUB          ; Do the actual PLOT
+       JP     #0D4D           ; Exit, restoring any permanent colours.
 
-DRAW   RST    #18
+; This subroutine does the actual PLOTting.
+
+PL_SUB LD     (23677),BC      ; Set COORDS
+       LD     A,#BF           ; Call the PIXEL-ADD routine but this time the
+       CALL   #22AC           ; upper pixel row has number 191 rather than 175
+       JP     #22EC           ; Leave the rest to the ROM.
+
+DRAW   RST    #18             ; DRAW enters here, check for a 3rd argument
        CP     ","
-       JR     NZ,LN_DRAW
-       RST    #20
-       CALL   EX_1NUM
-       JP     #2394
+       JR     NZ,LN_DRAW      ; Jump if only 2 arguments
+
+; This 3 lines handle DRAW with 3 arguments, i.e. drawing an arc. This is not
+; implemented in BASICODE and doesn't support the extended 256x192 range.
+
+       RST    #20             ; Advance past the ','
+       CALL   EX_1NUM         ; Evaluate the 3rd (arc) argument
+       JP     #2394           ; Leave it up to the ROM
+
+; Draw a straight line - 256x192 supported.
 
 LN_DRA CALL   #2307
        LD     A,C
