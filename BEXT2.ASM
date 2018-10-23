@@ -1461,6 +1461,15 @@ IN_ASS POP    HL              ; Drop the IN_BAD error handler
        CALL   LET             ; Now call LET to do the assignment
        JR     IN_NX2          ; Skip to next item
 
+;; NOTE:There is a remote possibility that the original location of CH-ADD has
+;; been moved during the INPUT process. This can happen when Interface 1 is 
+;; attached but the extended system variables haven't been created yet, and
+;; a syntax error occurs during parsing of a numeric input. The latter will
+;; create the extended system variables, thereby moving up the program, but
+;; CH-ADD will be restored to the original location and 'lose its place'.
+;; This is very likely to generate a 'Nonsense in BASIC' error after completion
+;; of the INPUT command. The ROM's INPUT handler suffers from the same bug.
+
 ; The following target handles any PRINTable items in the INPUT statement;
 ; these include '#stream' to change the default stream in case of reading from
 ; a storage medium (usually from GOSUB 540).
@@ -1566,7 +1575,7 @@ DRAW   RST    #18             ; DRAW enters here, check for a 3rd argument
        CP     ","
        JR     NZ,LN_DRAW      ; Jump if only 2 arguments
 
-; This 3 lines handle DRAW with 3 arguments, i.e. drawing an arc. This is not
+; These 3 lines handle DRAW with 3 arguments, for drawing an arc. This is not
 ; implemented in BASICODE and doesn't support the extended 256x192 range.
 
        RST    #20             ; Advance past the ','
@@ -1574,8 +1583,9 @@ DRAW   RST    #18             ; DRAW enters here, check for a 3rd argument
        JP     #2394           ; Leave it up to the ROM
 
 ; Draw a straight line - 256x192 supported.
+; Again, taken from the ROM code except for the call to PL_SUB.
 
-LN_DRA CALL   #2307
+LN_DRA CALL   #2307           ; STK-TO-BC
        LD     A,C
        CP     B
        JR     NC,X_GE_Y
@@ -1628,31 +1638,87 @@ DL_RAN JR     Z,DL_PLOT
 RPRT_B RST    8
        DEFB   #0A
 
-;EXPRESSION EVALUATION
+; ------------------------
+; The EXPRESSION EVALUATOR
+; ------------------------
+; And this is where the magic starts...
+; This is the subroutine which evaluates any expression, numeric or string, and
+; produces a result on the calculator stack. The expression may be as simple as
+; a single number or variable or as complex as 'CHR$(T+A-26*INT((T+A)/26)+65)'
+; (or even more complex!). 
+; The Spectrum's BASIC is much praised for its powerful mathematic and string
+; handling functions. However, a number of limitations, which are presumably a
+; left-over of its memory-cramped predecessors ZX80 and ZX81, hamper its
+; capability to run BASICODE programs:
+;
+; - The names of string and array variables are confined to just one letter.
+; - Strings in string arrays have static length. This is the final dimension
+;   of a string array in a DIM statement. If you assign a longer string to a
+;   string array element, the excess gets chopped off. If you assign a shorter
+;   string, it gets padded with spaces ('Procrustean lengthening').
+; - Arrays cannot have a subscript 0, whereas in BASICODE they can.
+; - String slicing functions LEFT$, MID$ and RIGHT$ are missing. There is an
+;   excellent substitute in the form A$(X TO Y), and with DEF FN you can even
+;   make the conversion fairly automatic; e.g. DEF FN L$(A$,N)=A$(TO N) and
+;   replace all occurrences of LEFT$(..) with FN L$(..).
+;   However, in ZX BASIC, the use of a subscript (X TO Y) (where both X and Y
+;   may be left out as well as 'TO') for string slicing leads to confusion 
+;   with string array subscripts. Indeed, in ZX BASIC, string arrays and simple
+;   strings share the same name space, whereas in BASICODE you can happily have
+;   a simple string A$ and a string array A$() without confusion.
+;
+;   Let's do this in BASICODE:
+;     DIM A$(10)
+;     LET A$="simple string"
+;     LET A$(1)="array string"
+;     then PRINT A$,A$(1) will print "simple string  array string"
+;   But in ZX BASIC it will print:   "aimple string  a"
+;   So ZX BASIC treats A$(1) as the first letter of fixed-length string A$!
+;   (it will even get more complicated with multi-dimensional string arrays...)
+;   In the end, to stop this confusion, I decided to drop ZX BASIC's string
+;   slicing altogether. This might be seen as a great loss, but remember that
+;   the goal to write this interpreter extension was not to make the Spectrum's
+;   BASIC better, but to make it BASICODE compatible...
+;
+;   Of course, the upshot of all this is that I had to rewrite almost the
+;   ENTIRE expression evaluator, including a new design for variable storage!
 
 SCANNING
-       RST    #18
-       LD     B,#00
-       PUSH   BC
-S_LP1  LD     C,A
-       LD     HL,SF_TABLE
-       CALL   #16DC
-       LD     A,C
-       JP     NC,S_ALPNUM
-       LD     B,#00
+       RST    #18             ; Get current character
+       LD     B,#00           ; The machine stack will hold a hierarchy of
+       PUSH   BC              ; operations and priorities to be performed;
+                              ; a zero in B signifies the bottom of it.
+S_LP1  LD     C,A             ; Character code to C
+       LD     HL,SF_TABLE     ; This table holds a subset of functions
+       CALL   #16DC           ; Lookup character code in the table
+       LD     A,C             ; Restore A
+       JP     NC,S_ALPNUM     ; If not found, jump forward
+       LD     B,#00           ; Else, find offset in BC
        LD     C,(HL)
-       ADD    HL,BC
-       JP     (HL)
+       ADD    HL,BC           ; Form address of handler in HL
+       JP     (HL)            ; and jump to it
+
+; This subroutine handles functions requiring two arguments in brackets,
+; such as SCREEN$, ATTR and POINT.
 
 S_2COORD
-       RST    #20
-       CP     "("
-       JR     NZ,S_RPC
-       CALL   NXT_2NUM
-       RST    #18
-       CP     ")"
-S_RPC  JP     NZ,#1C8A
-       RET
+       RST    #20             ; Get next character
+       CP     "("             ; Must be opening bracket,
+       JR     NZ,S_RPC        ; else 'Nonsense in BASIC'
+       CALL   NXT_2NUM        ; Evaluate two numeric arguments
+       RST    #18             ; Get character after the arguments
+       CP     ")"             ; Must be closing bracket
+S_RPC  JP     NZ,#1C8A        ; else 'Nonsense in BASIC'
+       RET                    ; Done
+
+; This table contains handlers for the following expression items:
+; - Literal strings in double quotes
+; - Sub-expressions in brackets
+; - Literal numbers starting with decimal point '.'
+; - Literal binary numbers, e.g. 'BIN 10010101'
+; - Unary plus
+; - User functions 'FN x(..)'
+; - Functions RND, INKEY$, PI, SCREEN$, ATTR and POINT
 
 SF_TABLE
        DEFB   #22
@@ -1682,32 +1748,42 @@ SF_TABLE
        DEFB   #00
 
 S_UPLUS
-       RST    #20
+       RST    #20             ; Unary plus, just skip it and loop back
        JP     S_LP1
 
 S_QUOTE
-       RST    #18
-       INC    HL
-       PUSH   HL
-       LD     BC,#0000
-       CALL   #250F
-       DEC    BC
-       POP    DE
+       RST    #18             ; (Double) Quote character
+       INC    HL              ; Step past opening quote
+       PUSH   HL              ; Save this address
+       LD     BC,#0000        ; Initialise length
+       CALL   #250F           ; Call S-QUOTE-S to count characters
+       DEC    BC              ; Discount closing quote
+       POP    DE              ; Get start address of string in DE
+
+; Note: This routine doesn't support quote characters in literal strings,
+; unlike the ROM. In BASICODE, they're not allowed anyway.
+
+; The next entry point stacks string parameters. The registers should be set as
+; follows and are stacked in order A, E, D, C, B on the calculator stack:
+; A : flag to indicate absolute (0) or relative (1) address in DE
+; BC: Length of string
+; DE: Address of string; either absolute (A=0) or relative to PROG if A=1.
+
 S_STRING
-       CALL   #2AB2
-       JP     CONT2
+       CALL   #2AB2           ; Stack the parameters (also resets FLAGS bit 6)
+       JP     CONT2           ; Jump forward to continue scanning
 
 S_BRACKET
-       RST    #20
-       CALL   SCANNING
-       CP     ")"
-       JP     NZ,#1C8A
-       RST    #20
-       JP     CONT2
+       RST    #20             ; An expression in brackets will be evaluated..
+       CALL   SCANNING        ; .. by calling SCANNING recursively
+       CP     ")"             ; .. and must be followed by a closing bracket
+       JP     NZ,#1C8A        ; .. else, report 'Nonsense in BASIC'.
+       RST    #20             ; Step past closing bracket
+       JP     CONT2           ; And jump forward to continue scanning
 
-S_FN   JP     SF_SUB
+S_FN   JP     SF_SUB          ; User defined function 'FN'; jump forward
 
-S_RND  LD     BC,(23670)
+S_RND  LD     BC,(23670)      ; RND handler
        CALL   #2D2B
        RST    #28
        DEFB   #A1,#0F,#34
@@ -1724,15 +1800,16 @@ S_RND  LD     BC,(23670)
        SUB    #10
        LD     (HL),A
        JR     S_PI_END
-S_PI   RST    #28
-       DEFB   #A3,#38
-       INC    (HL)
+S_PI   RST    #28             ; PI handler
+       DEFB   #A3,#38         ; stk-pi/2
+       INC    (HL)            ; Double to PI by incrementing the exponent
 S_PI_END
+       RST    #20             ; Skip past keyword
+       JP     S_NUMERIC       ; Jump to signal 'numeric result'
+
+S_INK$ LD     BC,#105A        ; INKEY$ handler
        RST    #20
-       JP     S_NUMERIC
-S_INK$ LD     BC,#105A
-       RST    #20
-       CP     "#"
+       CP     "#"             ; consider INKEY$#stream
        JP     Z,S_PUSHPO
        RES    6,(IY+1)
        CALL   #028E
@@ -1751,293 +1828,422 @@ IN$STK LD     B,#00
 S_STR  CALL   #2AB2
        JP     CONT2
 
-S_SCR$ CALL   S_2COORD
-       CALL   SCREEN$
+S_SCR$ CALL   S_2COORD        ; SCREEN$ handler
+       CALL   SCREEN$         ; real handler is in BCFN.ASM and vectored
        RST    #20
        JR     S_STR
 
-S_ATTR CALL   S_2COORD
+S_ATTR CALL   S_2COORD        ; ATTR handler
        CALL   #2580
        RST    #20
        JR     S_NUMERIC
 
 S_POINT
-       CALL   S_2COORD
+       CALL   S_2COORD        ; POINT handler
        CALL   #22CB
        RST    #20
        JR     S_NUMERIC
 
-S_ALPNUM
-       CALL   #2C88
-       JR     NC,NEGATE
-       CP     #41
-       JR     NC,S_LETTER
+; Current character was none of the above, now test for alphanumeric codes
 
-S_DEC  CALL   NOTBIN
+S_ALPNUM
+       CALL   #2C88           ; Alphanumeric code returns carry set
+       JR     NC,NEGATE       ; Jump if not alphanumeric
+       CP     #41             ; Is it a letter?
+       JR     NC,S_LETTER     ; Yes, jump
+
+S_DEC  CALL   NOTBIN          ; Evaluate decimal literals
        JR     S_BIN1
-S_BIN  CALL   #2C9F
-S_BIN1 LD     HL,(23645)
-       LD     A,(HL)
-       CALL   #18B6
-       LD     (23645),HL
-       JR     S_NUMERIC
+S_BIN  CALL   #2C9F           ; Handle 'BIN 10010101' form
+S_BIN1 LD     HL,(23645)      ; These lines ensure that possible hidden binary
+       LD     A,(HL)          ; numbers ($0E followed by 5 bytes) following the
+       CALL   #18B6           ; ASCII literals are skipped. They should not
+       LD     (23645),HL      ; occur in a program but may occur in direct
+       JR     S_NUMERIC       ; commands.
+
+; The following subroutine handles decimal literal numbers. It calls the VAL
+; vectors in BCFN.ASM to do the actual evaluation.
+
 NOTBIN CP     "."
-       JP     Z,VALSUB
+       JP     Z,VALSUB        ; Handle the form '.123'
        RST    #18
-       PUSH   HL
-       CALL   INT_TO_BC
-       CALL   NC,#2D2B
-       POP    HL
-       JR     NC,DEC_TST
-       CALL   #0078
-       CALL   #2D3B
+       PUSH   HL              ; Save current location
+       CALL   INT_TO_BC       ; Try evaluating as 16-bit integer first
+       CALL   NC,#2D2B        ; If successful, stack it
+       POP    HL              ; Restore current location
+       JR     NC,DEC_TST      ; Jump if integer part fits into 16 bits
+       CALL   #0078           ; Else, reset CH-ADD
+       CALL   #2D3B           ; .. and evaluate integer part as floating point
 DEC_TST
-       RST    #28
-       DEFB   #A1,#C2,#02
+       RST    #28             ; Invoke calculator
+       DEFB   #A1,#C2,#02     ; Store a 1 in MEM-2 (required for VALFRC later)
        DEFB   #38
-       LD     HL,(23645)
+       LD     HL,(23645)      ; CH-ADD
        LD     A,(HL)
-       JP     VALFRC
+       JP     VALFRC          ; Jump to VALFRC to evaluate any fractional part
 
 S_NUMERIC
-       SET    6,(IY+1)
-       JR     CONT2
+       SET    6,(IY+1)        ; A numeric value has been stacked so set bit 6
+       JR     CONT2           ; of FLAGS and continue
 
 S_LETTER
-       CALL   LOOKVARS
-       JR     NC,TST_VAR
-       JP     Z,#1C2E
-       RST    #28
-       DEFB   #A0,#38
+       CALL   LOOKVARS        ; If everything else has been excluded, look for
+       JR     NC,TST_VAR      ; variables. Jump if one has been found.
+       JP     Z,#1C2E         ; 'Variable not found' with undimensioned arrays
+
+; We have encountered an undefined variable. The normal response from ZX BASIC
+; was now to throw a 'Variable not found' message, and in BASICODE it is indeed
+; a requirement to assign a value to a variable first before using it in an
+; expression. Unfortunately, BASICODE was also based on Micro$oft BASIC which
+; happily assumes that unassigned variables have a value of 0 or empty string.
+; And so, many programmers who either were too lazy or ignorant to read the
+; rules simply 'forgot' to set variables first and got away with it.
+; In the end, after many 'Variable not found' errors and manual corrections of
+; other's failures, I decided to capitulate... So, the following three lines
+; were added which stack a zero in place of the missing variable. (Note that
+; it could have been done with un-DIM'ed arrays too, but this would be more
+; complicated because the subscripts would have to be parsed too).
+
+       RST    #28             ; Invoke the calculator
+       DEFB   #A0,#38         ; Stack a zero
+       JR     CONT2           ; And here we go again...
+
+; At this point, an existing variable has been identified.
+
+TST_VA CALL   Z,DESTAD        ; Find the actual location of an array element
+       INC    HL              
+       BIT    6,(IY+1)        ; Test numeric/string flag
+       JR     Z,STKSTR        ; Jump with strings
+       CALL   #33B4           ; else, call STACK-NUM
        JR     CONT2
-TST_VA CALL   Z,DESTAD
+
+; A string has to be stacked. Unlike a numeric value, this is not a simple copy
+; operation since the address stored in the variable may be absolute or
+; relative to PROG. Stacked string addresses must always be absolute.
+
+STKSTR LD     A,(HL)          ; The absolute or relative flag
        INC    HL
-       BIT    6,(IY+1)
-       JR     Z,STKSTR
-       CALL   #33B4
-       JR     CONT2
-STKSTR LD     A,(HL)
-       INC    HL
-       LD     E,(HL)
+       LD     E,(HL)          ; Address to DE
        INC    HL
        LD     D,(HL)
        INC    HL
-       LD     C,(HL)
+       LD     C,(HL)          ; And length to BC
        INC    HL
        LD     B,(HL)
-       AND    A
-       JR     Z,S_STK
-       LD     HL,(23635)
-       ADD    HL,DE
+       AND    A               ; Was the address absolute?
+       JR     Z,S_STK         ; Yes, go store it
+       LD     HL,(23635)      ; Else, it's a literal string in the program area
+       ADD    HL,DE           ; so add PROG to it
        EX     DE,HL
-S_STK  CALL   #2AB6
+S_STK  CALL   #2AB6           ; Stack the parameters
        JR     CONT2
 
-NEGATE LD     BC,#09DB
-       CP     "-"
-       JR     Z,S_PUSHPO
-       SUB    #AF
-       JP     C,#1C8A
-       LD     BC,#04F0
-       CP     #14
-       JR     Z,S_PUSHPO
-       JP     NC,#1C8A
-       LD     B,#10
-       ADD    A,#DC
-       LD     C,A
-       CP     #DF
-       JR     NC,NO_$
-       RES    6,C
-NO_$   CP     #EE
-       JR     C,S_PUSHPO
-       RES    7,C
+; At this point, a non-alphanumeric operator or function has been identified.
+; An operation code is built up in the C register where bits 6 and 7 indicate
+; the type of operand (bit 6) and result (bit 7); 0 for string, 1 for numeric.
+; This is pushed onto the machine stack together with a priority indicator (in
+; the B register) so that the operation can be performed after evaluation of
+; the operand.
+
+NEGATE LD     BC,#09DB        ; Negate; priority 9, code 1B (numeric, numeric)
+       CP     "-"             ; Is current character a '-'?
+       JR     Z,S_PUSHPO      ; Yes, jump
+       SUB    #AF             ; Subtract $AF for 'CODE' and higher
+       JP     C,#1C8A         ; Everything below gives 'Nonsense in BASIC'
+
+; Note: VAL$ has been removed here!
+
+       LD     BC,#04F0        ; Priority 4, code $30 (numeric, numeric)
+       CP     #14             ; Compare against 'NOT'
+       JR     Z,S_PUSHPO      ; Jump with 'NOT'
+       JP     NC,#1C8A        ; Throw 'Nonsense in BASIC' with higher codes
+       LD     B,#10           ; Remaining functions have priority 16
+       ADD    A,#DC           ; Now the range is $1C to $2F with bits 6 and 7
+       LD     C,A             ; set for numeric operand and result, to C
+       CP     #DF             ; 'CODE', 'VAL' and 'LEN' now give carry set
+       JR     NC,NO_$         ; Skip with higher codes
+       RES    6,C             ; Else, signal 'string operand'
+NO_$   CP     #EE             ; 'STR$' and 'CHR$' now give carry reset
+       JR     C,S_PUSHPO      ; Skip unless one of the above two
+       RES    7,C             ; Else, signal 'string result'
 S_PUSHPO
-       PUSH   BC
-       RST    #20
-       JP     S_LP1
+       PUSH   BC              ; Now stack the priority and operation code
+       RST    #20             ; Advance the BASIC pointer
+       JP     S_LP1           ; Loop back to consider the operand
 
-CONT2  RST    #18
-       LD     B,#00
-       LD     C,A
-       LD     HL,#2795
-       CALL   #16DC
-       JR     NC,S_LOOP
-       LD     C,(HL)
-       LD     HL,#26ED
-       ADD    HL,BC
-       LD     B,(HL)
-S_LOOP POP    DE
-       LD     A,D
-       CP     B
-       JR     C,S_TIGHTER
-       AND    A
-       JP     Z,#0018
-       PUSH   BC
-       LD     HL,#5C3B
-       LD     A,E
-       CP     #ED
-       JR     NZ,STK_LST
-       BIT    6,(HL)
-       JR     NZ,STK_LST
-       LD     E,#99
+; Evaluation continues at this point. A binary operator may follow, or we may
+; have reached the end of the expression. In both cases, the stack must be 
+; examined for any pending operations to be performed.
+; Note that this entry point is vectored for use by the FN o() and FN o$()
+; functions to allow re-entry of the evaluator from external ROM handlers.
+
+CONT2  RST    #18             ; Get current character
+       LD     B,#00           ; Pre-load B with 0 for 'end of expression'
+       LD     C,A             ; Copy character code to C
+       LD     HL,#2795        ; The table of binary operators in ROM
+       CALL   #16DC           ; Call INDEXER to lookup
+       JR     NC,S_LOOP       ; If not found, jump forward with B=0
+       LD     C,(HL)          ; Get operation code in C ($C3-$CF)
+       LD     HL,#26ED        ; Table of operator priorities (offset by $C3)
+       ADD    HL,BC           ; Index into the table
+       LD     B,(HL)          ; Get required priority
+
+; The following loop performs the actual operations. The priority of the
+; current operation is compared to that of any pending operation, and if it's
+; higher then scanning continues to evaluate the next operand. Else, the
+; pending operation is performed by calling the calculator after checking the
+; operand(s) for the correct type.
+
+S_LOOP POP    DE              ; Get pending operation and priority
+       LD     A,D             ; Pending priority goes to D
+       CP     B               ; Compare against current priority
+       JR     C,S_TIGHTER     ; Jump if current priority is higher
+       AND    A               ; A pending priority of zero signals
+       JP     Z,#0018         ; 'no operations left', so exit via GET-CHAR
+       PUSH   BC              ; Stack current priority and operation code
+       LD     HL,#5C3B        ; FLAGS
+       LD     A,E             ; Get pending operation code
+       CP     #ED             ; This is the code for 'USR-numeric'
+       JR     NZ,STK_LST      ; Skip if not 'USR'
+       BIT    6,(HL)          ; 'USR' may have a numeric or string argument,
+       JR     NZ,STK_LST      ; skip if numeric
+       LD     E,#99           ; Else, change the operation in 'USR-string'
+
+; Now check if the operand is of correct type. Bit 6 of FLAGS is set for a
+; numeric value on the top of the calculator stack, reset for a string. This is
+; now compared to bit 6 of the pending operation code.
+
 STK_LST
-       PUSH   DE
-       LD     A,(HL)
-       XOR    E
+       PUSH   DE              ; Save pending priority and code
+       LD     A,(HL)          ; Test bit 6 of FLAGS against bit 6 of the pending
+       XOR    E               ; operation code
        AND    #40
-S_ERR  JP     NZ,#1C8A
-       LD     A,E
-       AND    #3F
-       CP     #1D
-       JR     Z,S_VAL
-       CP     #06
+S_ERR  JP     NZ,#1C8A        ; If they don't match, report 'Nonsense in BASIC'
+       LD     A,E             ; Get operation code again
+       AND    #3F             ; Mask off the type bits 6 and 7; this yields an
+       CP     #1D             ; operation code for the calculator.
+       JR     Z,S_VAL         ; Exclude 'VAL', which is handled separately
+       CP     #06             ; Jump unless operation is 'to-power'
        JR     NZ,S_CALC
-       RST    #28
-       DEFB   #01,#31,#36
-       DEFB   #00,LESS0-$
-       DEFB   #01,#06,#38
-       JR     S_TEST
-LESS0  DEFB   #2A,#25,#01
-       DEFB   #31,#31,#27
-       DEFB   #03,#38
-       CALL   #34E9
-       JP     NC,#34E7
-       RST    #28
-       DEFB   #02,#31,#34
-       DEFB   #40,#B0,#00
-       DEFB   #02,#05,#31
-       DEFB   #27,#03,#38
-       CALL   #34E9
-       PUSH   AF
-       RST    #28
-       DEFB   #02,#04,#26
-       DEFB   #38
-       POP    AF
-       CALL   NC,#346E
-       JR     S_TEST
-S_VAL  CALL   VAL
-       JR     S_TEST
-S_CALC LD     B,A
-       RST    #28
-       DEFB   #3B,#38
-S_TEST POP    DE
-       LD     HL,#5C3B
-       SET    6,(HL)
-       BIT    7,E
-       JR     NZ,LOOPEND
-       RES    6,(HL)
-LOOPEND
-       POP    BC
-       JR     S_LOOP
-S_TIGHTER
-       PUSH   DE
-       LD     A,C
-       BIT    6,(IY+1)
-       JR     NZ,S_NEXT
-       AND    #3F
-       ADD    A,#08
-       LD     C,A
-       CP     #10
-       JR     NZ,NOT_AND
-       SET    6,C
-       JR     S_NEXT
-NOT_AN JR     C,S_ERR
-       CP     #17
-       JR     Z,S_NEXT
-       SET    7,C
-S_NEXT PUSH   BC
-       RST    #20
-       JP     S_LP1
 
-; Scan for FN function
+; The following code tests for X ^ Y where X < 0. On the standard Spectrum,
+; this throws an error 'Invalid argument' since it always calculates the
+; result using X ^ Y = EXP(Y * LN(X)), and X cannot be negative for LN.
+; We'll do it smarter: If X is negative AND Y is an integer, we'll calculate
+; the result by taking EXP(Y * LN(ABS(X))) and negating it if Y is an odd
+; number, so we still can calculate powers of negative numbers as long as the
+; power is an integer.
+; Note: The BASICODE book doesn't specify whether a negative value of X is
+; allowed, but I've seen many programs breaking on the inability of ZX BASIC
+; to handle this...
+
+       RST    #28             ; invoke calculator for X ^ Y
+       DEFB   #01,#31,#36     ; exchange, duplicate, less-0 (test X for <0)
+       DEFB   #00,LESS0-$     ; jump-true, to LESS0
+
+; Here X is >= 0, so just calculate the result using the 'to-power' operation.
+
+       DEFB   #01,#06,#38     ; exchange, to-power, end-calc (performs X ^ Y).
+       JR     S_TEST          ; Exit to S_TEST
+LESS0  DEFB   #2A,#25,#01     ; abs, ln, exchange (Y now on TOS)
+       DEFB   #31,#31,#27     ; duplicate, duplicate, int [LN(X), Y, Y, INT(Y)]
+       DEFB   #03,#38         ; subtract (Y-INT(Y) on TOS)
+       CALL   #34E9           ; Test Y-INT(Y); if Y is not an integer then
+       JP     NC,#34E7        ; report 'Invalid argument'.
+       RST    #28
+       DEFB   #02,#31,#34     ; delete, duplicate [LN(X), Y, Y], stk-data
+       DEFB   #40,#B0,#00     ; The next four bytes stack literal number 2
+       DEFB   #02,#05,#31     ; division, duplicate [LN(X), Y/2, Y/2]
+       DEFB   #27,#03,#38     ; int, subtract, end-calc [LN(X), Y/2-INT(Y/2)]
+       CALL   #34E9           ; Now test Y/2-INT(Y/2) for zero
+       PUSH   AF              ; Carry will be set if Y was an even number
+       RST    #28
+       DEFB   #02,#04,#26     ; delete, multiply, exp
+       DEFB   #38             ; end-calc [EXP(Y*LN(ABS(X)))]
+       POP    AF              ; Retrieve carry flag
+       CALL   NC,#346E        ; If reset, Y was odd so negate the result
+       JR     S_TEST          ; Jump forward
+
+; This calls the VAL vector in BCFN.ASM which evaluates a number. In BASICODE,
+; the argument of the VAL function should strictly be a numeric literal.
+; Non-numeric arguments will give 'undefined' results. In ZX BASIC, the
+; argument will be evaluated as an expression which is a very powerful feature
+; by itself, but it's also prone to stop the program with 'Nonsense in BASIC'
+; or another error when the expression is not a valid one in some respect.
+; Rather than to throw this at an unsuspecting user, I decided to follow the
+; BASICODE spec here.
+
+S_VAL  CALL   VAL             ; Call the vector
+       JR     S_TEST          ; Jump to examine the result
+
+; All other functions are handled here. The operation code is passed to the B
+; register and the calculator called with function $3B which signifies that the
+; B register specifies the operation to be performed.
+
+S_CALC LD     B,A             ; Pass operation code to B
+       RST    #28             ; Invoke calculator
+       DEFB   #3B,#38         ; fp-calc-2, end-calc
+
+; Now set bit 6 of FLAGS according to the result type 
+
+S_TEST POP    DE              ; Retrieve pending priority and operation code
+       LD     HL,#5C3B        ; Point to FLAGS
+       SET    6,(HL)          ; Assume numeric result
+       BIT    7,E             ; Bit 7 is set for numeric result
+       JR     NZ,LOOPEND      ; Skip if indeed numeric
+       RES    6,(HL)          ; Else, signal 'string result'
+LOOPEND
+       POP    BC              ; Retrieve current priority and operation code
+       JR     S_LOOP          ; .. and loop back for next pending operation
+
+; The current operator has a higher priority than the pending operation so has
+; to be evaluated first.
+
+S_TIGHTER
+       PUSH   DE              ; Stack pending operation and priority again
+       LD     A,C             ; Get current operator code
+       BIT    6,(IY+1)        ; Is the value on the calculator stack numeric?
+       JR     NZ,S_NEXT       ; Yes, jump
+       AND    #3F             ; Mask off the type bits
+       ADD    A,#08           ; Operators =, <>, <, >, <=, >=, AND, and + have
+       LD     C,A             ; string equivalents 8 higher; transfer to C
+       CP     #10             ; Is the operator 'AND'?
+       JR     NZ,NOT_AND      ; skip if not
+       SET    6,C             ; The right-hand operand for AND must be numeric
+       JR     S_NEXT          ; Jump forward
+NOT_AN JR     C,S_ERR         ; -, *, /, ^, and OR cannot have string operands
+       CP     #17             ; Test against $17 for 'string addition'
+       JR     Z,S_NEXT        ; Result of string addition is also a string
+       SET    7,C             ; All other string operators have numeric result
+S_NEXT PUSH   BC              ; Now stack the priority and operation code
+       RST    #20             ; Advance BASIC pointer
+       JP     S_LP1           ; .. and loop back for second operand
+
+; --------------------------
+; Evaluation of FN functions
+; --------------------------
+; User-defined functions (using DEF FN) are evaluated here. As explained by
+; DEF FN, the representation in memory differs significantly from the original
+; Spectrum BASIC. FNs are stored as variables, containing a 'local' variable
+; area to store the arguments values. The LOOKVARS routine scans this area
+; (pointed to by DEFADD) first before looking in the global variables area.
+; After this area, there is a pointer to the expression after '=' in the DEF FN
+; statement (relative to PROG) which is then evaluated by recursively calling
+; SCANNING (note that you cannot call the same FN recursively since there is
+; no way to stop it from calling itself!).
+; DEF FN was legalised in the second edition of BASICODE-3 (1988), but only for
+; numeric FNs with only one parameter. However it has always been present in
+; BEXT to handle LEFT$, MID$, RIGHT$ and EOF.
 
 SF_SUB RST    #20             ; Next character
        LD     C,#80           ; Signal 'look for FN type variable'
        CALL   LOOKV1          ; Look up the function in the VARS area
        JP     C,#2812         ; If not found, report 'FN without DEF'
-       PUSH   BC
-       EX     DE,HL
+       PUSH   BC              ; Save type of function in C
+       EX     DE,HL           ; Save HL while advancing past the initial '('
        RST    #20
        EX     DE,HL
+       INC    HL              ; Step past the null and length bytes
        INC    HL
        INC    HL
-       INC    HL
-       PUSH   HL
-       LD     A,(HL)
-       CP     #80
-       JR     Z,SF_BR2
-SF_ARG PUSH   HL
+       PUSH   HL              ; Save the pointer
+       LD     A,(HL)          ; Get first character of parameter area
+       CP     #80             ; A $80 byte signals 'no parameters'
+       JR     Z,SF_BR2        ; .. so skip the next loop
+
+; For each argument, SCANNING is called recursively to evaluate it and store
+; its value in the FN's local 'variables' area.
+
+SF_ARG PUSH   HL              ; Save HL while the argument is evaluated
        CALL   SCANNING
        POP    HL
-       LD     A,(#5C3B)
-       XOR    (HL)
+       LD     A,(#5C3B)       ; Get FLAGS byte (bit 6 signals type of argument)
+       XOR    (HL)            ; Match this against the type of the parameter
        AND    #40
-       JR     NZ,SF_MIS
+       JR     NZ,SF_MIS       ; Report 'Parameter error' if they don't match
        LD     B,#01
-       CPIR
-       EX     DE,HL
-       LD     HL,(#5C65)
-       LD     BC,#0005
-       SBC    HL,BC
-       LD     (#5C65),HL
-       BIT    6,(IY+1)
-       JR     NZ,SF_CPY
-       LD     (HL),A
-SF_CPY LDIR
-       EX     DE,HL
-       LD     A,(HL)
-       CP     #80
-       JR     Z,SF_BR2
-       EX     DE,HL
+       CPIR                   ; Skip past the null byte after the param's name
+       EX     DE,HL           ; This goes to DE as destination
+       LD     HL,(#5C65)      ; Fetch STKEND
+       LD     BC,#0005        ; 5 bytes to move
+       SBC    HL,BC           ; Point to start of value to be copied
+       LD     (#5C65),HL      ; Reset STKEND
+       BIT    6,(IY+1)        ; Is the value numeric?
+       JR     NZ,SF_CPY       ; Yes, skip
+       LD     (HL),A          ; Else, ensure that the 'relative' flag is reset
+SF_CPY LDIR                   ; Copy over the 5 bytes
+       EX     DE,HL           ; Swap source and destination
+       LD     A,(HL)          ; Get first byte of next parameter
+       CP     #80             ; An $80 byte signals 'no further parameters'
+       JR     Z,SF_BR2        
+       EX     DE,HL           ; Save HL
        RST    #18
-       CP     #2C
-       JR     NZ,SF_DEF
-       RST    #20
-       EX     DE,HL
+       CP     #2C             ; Is current character a ','?
+       JR     NZ,SF_DEF       ; Exit from the loop if not
+       RST    #20             ; Else, advance pointer and loop back for
+       EX     DE,HL           ; the next argument
        JR     SF_ARG
-SF_DEF EX     DE,HL
+
+; We now have to deal with case that there are fewer arguments specified than
+; the function has parameters. Normally this would have been an error, but the
+; case of MID$(A$,N) is a legal exception to this (it was legalised in the
+; second edition of BASICODE-3). In order to signal this to the function's
+; handler, the 5 bytes of the excess parameters are set to $FF 00 00 00 00.
+; The MID$ handler in BCFN.ASM picks this up and acts accordingly.
+; Of course, this 'feature' leads to interesting results when abused (e.g.
+; DEF FN f(x,y)=x+y will return a very large number when called with just one
+; argument) but chances of this happening in a BASICODE program are negligible
+; since only one parameter is allowed, and you cannot call a function without
+; arguments!
+
+SF_DEF EX     DE,HL           ; Pointer to function in VARS area to HL
 SFD_LP XOR    A
        LD     B,1
-       CPIR
-       DEC    A
+       CPIR                   ; Find the terminating null byte for this arg
+       DEC    A               ; A is now $FF, enter this into the first byte
        LD     (HL),A
-       INC    A
-       INC    HL
-       LD     B,4
+       INC    A               ; Set A to zero again
+       INC    HL              ; Point to second byte of argument
+       LD     B,4             ; Set the remaining 4 bytes to zero
 SFDFIL LD     (HL),A
        INC    HL
        DJNZ   SFDFIL
-       LD     A,(HL)
-       CP     #80
-       JR     NZ,SFD_LP
-SF_BR2 EX     DE,HL
+       LD     A,(HL)          ; Get first byte of next parameter's name
+       CP     #80             ; Loop back for all remaining parameters
+       JR     NZ,SFD_LP       ; until the $80 end marker has been reached
+
+; At this point, all parameters have been evaluated or set to default.
+
+SF_BR2 EX     DE,HL           ; Save HL
        RST    #18
-       CP     #29
-SF_MIS JP     NZ,#288B
-       EX     DE,HL
+       CP     #29             ; Current character must be ')'
+SF_MIS JP     NZ,#288B        ; else report 'Nonsense in BASIC'
+       EX     DE,HL           ; Swap HL back
        INC    HL
-       LD     C,(HL)
+       LD     C,(HL)          ; Get pointer to DEF FN's expression in BC
        INC    HL
        LD     B,(HL)
-       LD     HL,(#5C53)
+       LD     HL,(#5C53)      ; It is relative to PROG
        ADD    HL,BC
-       LD     (#5C5D),HL
-       LD     HL,(#5C0B)
-       EX     (SP),HL
+       LD     (#5C5D),HL      ; Set CH-ADD (DE holds current address)
+       LD     HL,(#5C0B)      ; Get current pointer to arguments in DEFADD
+       EX     (SP),HL         ; Exchange with pointer to current FN's arguments
+       LD     (#5C0B),HL      ; saved earlier; this will be the new DEFADD
+                              ; (thus you can safely call another FN from an FN
+                              ; as long as they aren't called recursively!)
+       PUSH   DE              ; Save pointer after FN function call
+       CALL   SCANNING        ; Now call SCANNING recursively to evaluate the
+       POP    HL              ; FN's expression
+       LD     (#5C5D),HL      ; Restore CH-ADD
+       POP    HL              ; Retrieve previous DEFADD address
        LD     (#5C0B),HL
-       PUSH   DE
-       CALL   SCANNING
-       POP    HL
-       LD     (#5C5D),HL
-       POP    HL
-       LD     (#5C0B),HL
-       POP    BC
+       POP    BC              ; Retrieve type of FN (numeric/string) in C
        LD     A,(#5C3B)
-       XOR    C
+       XOR    C               ; Match bit 6 of flags with bit 6 of C
        AND    #40
-       JR     NZ,LV_RPC
-       RST    #20
-       JP     CONT2
+       JR     NZ,LV_RPC       ; 'Nonsense in BASIC' if they don't match
+       RST    #20             ; Advance to next character in program
+       JP     CONT2           ; Continue evaluation
 
 ;------------------------------------------------------------------------------
 ; LOOKVARS routine
