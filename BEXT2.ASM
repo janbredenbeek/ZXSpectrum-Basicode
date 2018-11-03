@@ -982,7 +982,7 @@ CLR_2  EX     (SP),HL         ; Exchange new RAMTOP and string space
        JR     C,RPRT_S        ; Error if this comes out negative (can happen?)
        SBC    HL,BC           ; Now compare to STKEND + margin
        ADD    HL,BC
-RPRT_S JP     C,#1F15         ; If they clash, report 'S Out of string space'
+RPRT_S JP     C,#1F15         ; If they clash, report 'Out of memory'
        LD     (STRS),HL       ; This is stored in the variable STRS
        LD     (HL),#00        ; The bottom marker for the new FOR/GOSUB stack
        POP    DE              ; Retrieve new RAMTOP
@@ -2325,8 +2325,8 @@ V_ARRAY
 ; However, when evaluating a user DEFined FN function, we must first look for
 ; any matching arguments before searching the variables area. In this case,
 ; DEFADD will point to the FN's parameter area which is laid out in memory as
-; a 'local' variables area (terminated by a $80 byte). When not evaluating a
-; a FN function, DEFADD-hi will be zero.
+; a 'local' variables area (terminated by a $80 byte). When not evaluating an
+; FN function, DEFADD-hi will be zero.
 
 V_FN   LD     A,(#5C0C)       ; Get DEFADD-hi
        AND    A
@@ -2424,466 +2424,624 @@ N_O_1  LD     A,(HL)          ; Now enter a loop to skip past the name
 N_O_2  ADD    HL,DE           ; Skip past the variable's body
        RET
 
+; -----------------------------------------------
+; Find address of destination element in an array
+;------------------------------------------------
+; This routine is called from the Class 01 command handler and SCANNING, to
+; locate the address of an array element. It returns HL pointing to the
+; location before the requested element.
+; Array dimensions have the usual layout; one byte for the number of dimensions
+; followed by 2 bytes indicating the size of each dimension.
+; Note: Since subscripts start at 0, dimensions are one higher than specified
+; in a DIM statement! Also string arrays have only 5 bytes for each element
+; specifying a flag for absolute or relative address, followed by 2 bytes for
+; the address, and finally 2 bytes for the length. The strings themselves are
+; stored in the string space (absolute address) or in the program area itself
+; (then the address is relative to PROG base, since the BASIC program may be
+; moved in memory when opening or closing an I/O channel!).
+
 DESTAD
+       INC    HL              ; Step past null byte and length bytes
        INC    HL
        INC    HL
-       INC    HL
-       LD     B,(HL)
-       EX     DE,HL
-       LD     HL,#0000
-       PUSH   HL
-       JR     D_COUNT
+       LD     B,(HL)          ; Get number of dimensions
+       EX     DE,HL           ; Save pointer in DE
+       LD     HL,#0000        ; Initialise HL to zero
+       PUSH   HL              ; Push this on the machine stack
+       JR     D_COUNT         ; Jump forward to consider first subscript
 D_COMMA
-       PUSH   HL
-       RST    #18
+       PUSH   HL              ; This loop is taken for every subsequent
+       RST    #18             ; subscripts; a comma must follow
        CP     #2C
-       JP     NZ,#2A20
+       JP     NZ,#2A20        ; Else report 'Subscript wrong'
 D_COUNT
-       RST    #20
-       POP    HL
-       PUSH   BC
-       PUSH   HL
-       CALL   #2AEE
-       EX     (SP),HL
-       EX     DE,HL
-       DEC    HL
-       CALL   INT_EXP
-       INC    HL
-       CALL   MULT
-       ADD    HL,BC
-       POP    DE
-       POP    BC
-       DJNZ   D_COMMA
-       PUSH   HL
+       RST    #20             ; Advance to next subscript
+       POP    HL              ; Retrieve overall index
+       PUSH   BC              ; Save dimension counter and array type
+       PUSH   HL              ; Save index again
+       CALL   #2AEE           ; This calls the 'LD DE,(DE+1)' routine - it
+                              ; fetches the next dimension size in DE and
+                              ; leaves HL pointing to the last byte of it
+       EX     (SP),HL         ; Save HL and retrieve overall index
+       EX     DE,HL           ; Current dimension now in HL, index to DE
+
+; Now call INT_EXP to evaluate the next subscript and check if it is in range
+; 0 to 'dimension size' minus 1. Note that 'dimension size' is 1 higher than
+; specified in the DIM statement (conform BASICODE standard) so we have to 
+; compensate for this before checking the range!
+
+       DEC    HL              ; Decrement size
+       CALL   INT_EXP         ; Evaluate next subscript and check range
+       INC    HL              ; Balance the DEC above
+       CALL   MULT            ; Multiply size by running overall index in DE
+       ADD    HL,BC           ; Add the current index in BC to the result
+       POP    DE              ; Retrieve pointer to dimension size
+       POP    BC              ; Retrieve dimension counter and array type
+       DJNZ   D_COMMA         ; Loop for all dimensions
+       PUSH   HL              ; Save overall index
        RST    #18
-       CP     #29
-       JP     NZ,#2A20
-       RST    #20
-       POP    HL
-       BIT    6,C
-       LD     B,H
+       CP     #29             ; A closing bracket ')' must follow
+       JP     NZ,#2A20        ; Else, report 'Subscript wrong'
+       RST    #20             ; Advance BASIC pointer
+       POP    HL              ; Retrieve overall index
+       BIT    6,C             ; Test numeric/string array flag
+       LD     B,H             ; Transfer overall index to BC
        LD     C,L
-       ADD    HL,HL
+       ADD    HL,HL           ; Multiply by 5 - the size of each array element
        ADD    HL,HL
        ADD    HL,BC
-       ADD    HL,DE
-       RET    NZ
-       RES    6,(IY+1)
-       RET
+       ADD    HL,DE           ; HL now points to one location before the
+                              ; requested element
+       RET    NZ              ; Return now with numeric arrays
+       RES    6,(IY+1)        ; Else, reset flag to string (it was set to
+       RET                    ; numeric when evaluating the subscripts)
+
+; The following subroutine evaluates each subscript and returns it in BC. It is
+; also checked against the current dimension size in HL.
+
 INT_EXP
-       PUSH   DE
+       PUSH   DE              ; Save registers
        PUSH   HL
-       CALL   EX_1NUM
-       CALL   #1E99
-       POP    HL
+       CALL   EX_1NUM         ; Evaluate the next subscript
+       CALL   #1E99           ; Fetch it into BC
+       POP    HL              ; Restore registers
        POP    DE
-       SBC    HL,BC
-       ADD    HL,BC
-       RET    NC
-       RST    8
-       DEFB   #02
+       SBC    HL,BC           ; Check the subscript against the size in HL
+       ADD    HL,BC           ; Restore HL
+       RET    NC              ; Return if subscript is in range
+       RST    8               ; Else, report 'Subscript wrong'. Note: Two JP's
+       DEFB   #02             ; to $2A20 above could be replaced by JR's here!
 
-GET_HL CALL   MULT
-       JP     C,#1F15
-       RET
+; This subroutine is called from just one occasion in the DIM handler. It calls
+; the MULT subroutine below, giving 'Out of memory' if the result overflows.
 
-MULT   XOR    A
-       SBC    HL,DE
-       ADD    HL,DE
-       JR     NC,MU1
-       EX     DE,HL
-MU1    CP     D
-       RET    C
-       OR     E
-       LD     E,D
-       JR     NZ,MU4
-       EX     DE,HL
-       RET
-MU2    EX     DE,HL
-       ADD    HL,DE
-       EX     DE,HL
-MU3    ADD    HL,HL
-       RET    C
-MU4    RRA
-       JR     NC,MU3
-       AND    A
-       JR     NZ,MU2
-       ADD    HL,DE
-       RET
+GET_HL CALL   MULT            ; Multiply HL by DE
+       JP     C,#1F15         ; Report 'Out of memory' if over 65535
+       RET                    ; Done
 
-LET    BIT    6,(IY+1)
-       JR     NZ,L_NUM
-       CALL   L_PAR
-       CALL   #2AB2
-L_NUM  LD     HL,(23629)
-       BIT    1,(IY+55)
-       JR     Z,L_EXIST
-       LD     L,(IY+57)
+; ---------------------------------------
+; A faster 16-bit multiplication routine!
+; ---------------------------------------
+; This routine is used for multiplying HL by DE instead of the ROM routine at
+; $30A9. It has been shamelessly taken from an example in the Hisoft Devpac
+; manual :-o. Still, I've managed to save one instruction by replacing
+; 'OR D; SCF' by 'CP D' at MU1 :-).
+; The routine is generally much faster since it only counts the bits in the
+; multiplier which are significant. The smaller of the two 16-bit values is
+; taken as multiplier, and since the result must also fit in 16 bits, this
+; value cannot be greater than 255 so we only have to consider at most 8 bits
+; rather than 16!
+
+MULT   XOR    A               ; Clear A and carry flag
+       SBC    HL,DE           ; Test whether HL is greater than DE
+       ADD    HL,DE
+       JR     NC,MU1          ; If yes, skip
+       EX     DE,HL           ; Else, swap numbers so the lesser goes to DE
+MU1    CP     D               ; If DE > 255, the result will certainly overflow
+       RET    C               ; since HL > DE, so return carry set if D > 0
+       OR     E               ; This will copy E to A and set zero flag if E=0
+       LD     E,D             ; This will set DE to zero since D is also zero
+       JR     NZ,MU4          ; If E was nonzero, jump to do the multiplication
+       EX     DE,HL           ; Else, result will be zero so return with HL = 0
+       RET
+MU2    EX     DE,HL           ; A '1' bit has been shifted out from the
+       ADD    HL,DE           ; multiplier so add the multiplicant in HL to DE
+       EX     DE,HL
+MU3    ADD    HL,HL           ; For each iteration, shift the multiplicant left
+       RET    C               ; Return carry set if overflow
+MU4    RRA                    ; Shift out next bit of the multiplier
+       JR     NC,MU3          ; If this bit was 0, just shift the multiplicant
+       AND    A               ; Test if all '1' bits have been shifted out
+       JR     NZ,MU2          ; If not, loop back
+       ADD    HL,DE           ; A final addition will put the result in HL,
+       RET                    ; setting the carry flag if it overflows
+
+; -----------------------
+; The LET command handler
+; -----------------------
+; This routine is called whenever a value is to be assigned to a variable or
+; array element. It is called indirectly by LET from the Class 02 handler, and
+; directly by FOR, READ, and INPUT.
+; On entry, the value to be assigned is on the calculator stack. In case of an
+; existing variable or array element, DEST points to the location before the 5
+; bytes which hold its value. In case of a new variable, the low byte of STRLEN
+; holds the first byte of the name (with type bits masked in) and the high byte
+; holds the number of characters in the name.
+; In case of a numeric assignment, the 5 bytes from the calculator stack are 
+; simply copied to the destination in the VARS area. However in case of a
+; string, these 5 bytes will only hold a pointer to the start of the string in
+; memory and it's length. The actual string may be a literal string in the PROG
+; area, which is liable to move when a channel is opened, or reside in the
+; E_LINE or WORKSP area which is only a temporary storage. In the first case,
+; the pointer is stored as a relative pointer to PROG. In the latter case, the
+; string has to be copied to the string space area between the GOSUB stack and
+; RAMTOP (see CLEAR command). This may involve some cleaning up (Garbage
+; collecting), and when this doesn't help an error 'S Out of string space' is
+; thrown (which may be somewhat embarrassing to unsuspecting users!). See the
+; CLEAR command on how to set the size of the string space.
+
+LET    BIT    6,(IY+1)        ; Test the numeric/string flag
+       JR     NZ,L_NUM        ; Jump if this is a numeric assignment
+       CALL   L_PAR           ; Locate and if necessary store the string in the
+       CALL   #2AB2           ; string space and re-stack its parameters
+L_NUM  LD     HL,(23629)      ; Get pointer in DEST
+       BIT    1,(IY+55)       ; Is it an existing variable?
+       JR     Z,L_EXIST       ; Yes, jump
+       LD     L,(IY+57)       ; L holds length of new variable's name
        LD     H,#00
-       LD     BC,#0006
-       ADD    HL,BC
+       LD     BC,#0006        ; Six more bytes are required; one for the end
+       ADD    HL,BC           ; marker after the name and 5 for the value
        LD     B,H
        LD     C,L
-       LD     HL,(23641)
-       DEC    HL
-       CALL   #1655
+       LD     HL,(23641)      ; E_LINE
+       DEC    HL              ; Point to last location of VARS area
+       CALL   #1655           ; Make room for new variable
        INC    HL
-       EX     DE,HL
-       LD     HL,(23629)
-       LD     BC,(23666)
-       LD     A,C
-L_CHAR LD     (DE),A
-       INC    DE
+       EX     DE,HL           ; The destination pointer goes to DE
+       LD     HL,(23629)      ; DEST points to the name in the BASIC program
+       LD     BC,(23666)      ; Get length of name in B and first byte of name
+       LD     A,C             ; in C; transfer this to A
+L_CHAR LD     (DE),A          ; The following loop copies the characters of the
+       INC    DE              ; name from the BASIC area to the VARS area
 L_SPC  INC    HL
        LD     A,(HL)
-       CP     #21
+       CP     #21             ; .. but skip any spaces and control codes
        JR     C,L_SPC
-       OR     #20
-       DJNZ   L_CHAR
-       XOR    A
+       OR     #20             ; All characters but the first are converted to
+       DJNZ   L_CHAR          ; lower case
+       XOR    A               ; A zero byte marks the end of the name
        LD     (DE),A
-       EX     DE,HL
-L_EXIS INC    HL
-       EX     DE,HL
-       LD     HL,(23653)
-       LD     BC,#0005
+       EX     DE,HL           ; Swap pointers to synchronise with code below
+L_EXIS INC    HL              ; Step past the null byte after the name
+       EX     DE,HL           ; Destination pointer goes to DE
+       LD     HL,(23653)      ; STKEND
+       LD     BC,#0005        ; 5 bytes to be copied
        AND    A
        SBC    HL,BC
-       LD     (23653),HL
+       LD     (23653),HL      ; Reset STKEND
        PUSH   DE
-       LDIR
-       POP    HL
+       LDIR                   ; Copy the 5 bytes
+       POP    HL              ; Return HL pointing to the destination
        RET
 
-L_PAR  CALL   #2BF1
-       LD     A,B
+; The following subroutine handles the actual storage of strings. The string is
+; copied to the string space if necessary. In case of a literal string in a
+; BASIC program, the string is not copied but a pointer returned relative to
+; the base of the program. The registers are returned as follows:
+; A : zero for an absolute pointer, 1 for a relative pointer
+; BC: Length of string
+; DE: Address of start of string (either absolute or relative to PROG).
+
+L_PAR  CALL   #2BF1           ; Call STK-FETCH to get parameters in BC and DE
+       LD     A,B             ; Test for null length
        OR     C
-       JR     NZ,NO_NULL
-       LD     D,B
+       JR     NZ,NO_NULL      ; Jump if not null string
+       LD     D,B             ; Else, set DE to zero too and return.
        LD     E,C
        RET
-NO_NUL XOR    A
-       SBC    HL,DE
-       RET    C
-       LD     HL,(23641)
+NO_NUL XOR    A               ; Clear relative flag
+       SBC    HL,DE           ; Test address of string against STKEND (in HL)
+       RET    C               ; Return if higher (it's already in string space)
+       LD     HL,(23641)      ; Get E_LINE
        SCF
-       SBC    HL,DE
-       JR     NC,L_PROG
-       LD     HL,(STRPTR)
-       AND    A
-       SBC    HL,BC
-       INC    HL
-       PUSH   DE
-       EX     DE,HL
-       LD     HL,(STRS)
-       SBC    HL,DE
-       JR     C,L_OK
+       SBC    HL,DE           ; Carry will be set if string is in E_LINE or
+       JR     NC,L_PROG       ; WORKSP area; jump if it's below
+
+; The string is either in E_LINE or WORKSP (as result of a direct command,
+; INPUT command or calculator operation). Since these areas are temporary
+; storage, the string must be moved to permanent storage in the string space
+; area. The area is checked for free space, and if insufficient the GARBAGE
+; routine is called to clean up unused sections. The check is then repeated and
+; if there's still insufficient space the error 'S Out of string space' is
+; reported.
+
+       LD     HL,(STRPTR)     ; Get pointer to first used location
+       AND    A               ; (initially equal to RAMTOP)
+       SBC    HL,BC           ; It runs downwards with each string added
+       INC    HL              ; Add 1 for check against STRS pointer
+       PUSH   DE              ; Save source address of string
+       EX     DE,HL           ; Destination address goes to DE
+       LD     HL,(STRS)       ; Pointer to bottom of string space
+       SBC    HL,DE           ; Check the new pointer against STRS
+       JR     C,L_OK          ; Jump if space is sufficient
        PUSH   BC
-       CALL   GARBAGE
+       CALL   GARBAGE         ; Else, save BC while doing clean-up
        POP    BC
-       LD     HL,(STRPTR)
+       LD     HL,(STRPTR)     ; Now repeat the check with new STRPTR
        AND    A
        SBC    HL,BC
        INC    HL
        EX     DE,HL
        LD     HL,(STRS)
        SBC    HL,DE
-       JR     C,L_OK
-       CALL   ERROR
+       JR     C,L_OK          ; Jump if there is enough room now
+       CALL   ERROR           ; Else, report 'S Out of string space'
        DEFB   #1B
-L_OK   POP    HL
-       DEC    DE
-       LD     (STRPTR),DE
+L_OK   POP    HL              ; Retrieve source address of string
+       DEC    DE              ; Set STRPTR to one below the first byte of the
+       LD     (STRPTR),DE     ; new string to be added
        INC    DE
-       PUSH   DE
+       PUSH   DE              ; Save BC and DE
        PUSH   BC
-       LDIR
-       POP    BC
+       LDIR                   ; Copy over the string
+       POP    BC              ; Retrieve BC and DE
        POP    DE
-       XOR    A
-       RET
-L_PROG LD     HL,(23635)
-       EX     DE,HL
-       LD     A,#01
-       SBC    HL,DE
-       EX     DE,HL
-       RET    NC
-       ADD    HL,DE
-       EX     DE,HL
-       XOR    A
+       XOR    A               ; Signal 'string has absolute address' and return
        RET
 
-G_NXT1 INC    HL
+; Strings in the program area don't need to be copied to the string space. They
+; are referenced using a pointer relative to PROG, so the STKSTR routine in
+; SCANNING can correctly convert this to an absolute address before putting it
+; onto the calculator stack, even if the PROG area has been moved due to I/O
+; channels which have been opened. The first of the 5 bytes is set to 1 to 
+; signal that the address is relative.
+
+L_PROG LD     HL,(23635)      ; Get PROG
+       EX     DE,HL           ; Swap address and PROG base
+       LD     A,#01           ; Signal 'address is relative'
+       SBC    HL,DE           ; Subtract base address (carry reset from above)
+       EX     DE,HL           ; Return this in DE
+       RET    NC              ; .. but do a final check if it's really in PROG
+       ADD    HL,DE           ; Else, cancel the subtraction
+       EX     DE,HL           ; Note: it's very unlikely that we'll ever come
+       XOR    A               ; here - but probably an extra safeguard?
+       RET                    ; Return with A signalling absolute address again
+
+; ------------------
+; GARBAGE COLLECTING
+; ------------------
+; As explained in CLEAR and LET above, strings which do not reside in the BASIC
+; program itself are stored in the 'string space' between the FOR/GOSUB stack
+; and RAMTOP. This area fills up downwards as new strings are added, up to the
+; point where the pointer to the free space (STRPTR) hits the bottom at (STRS).
+; When an existing string variable is re-assigned a new string, only its
+; pointer is adjusted. The string itself is NOT removed. Note that a string may
+; be pointed to by more variables, e.g. after LET A$=B$ or even when assigning
+; substrings.
+; Eventually, when the string space has been filled up completely, we need to
+; clean it up and remove the slack space ('Garbage') which has been accrued by
+; this process. This involves scanning the variables area for all strings and
+; reclaiming all unused space. Of course this can be a time-consuming process
+; and depending on the amount of string space reserved and how much string
+; manipulation is done it can occur more or less often.
+; E.g. 'LET A$="":FOR I=1 to 255:LET A$=A$+CHR$(I):NEXT I' needs at least 509
+; bytes of string space and will trigger a Garbage Collect after just 32
+; iterations. However, then doing LET B$=A$ will only cost 7 bytes of variable
+; space as opposed to 258 on ZX BASIC!
+
+; This subroutine scans the variables area for the next string variable or
+; array element which resides in the string space area. It is normally entered
+; at G_NEXT and returns carry reset when the end of the variables area has been
+; reached.
+
+G_NXT1 INC    HL              ; This is part of the loop - skip past remaining
+       INC    HL              ; bytes
        INC    HL
-       INC    HL
-G_NEXT DEC    BC
-       LD     A,B
+G_NEXT DEC    BC              ; BC holds remaining array elements or 1 on the
+       LD     A,B             ; initial call and counts down
        OR     C
-       JR     NZ,G_ELEM
-G_VAR  LD     A,(HL)
-       CP     #80
-       RET    Z
+       JR     NZ,G_ELEM       ; Jump if more array elements to consider
+G_VAR  LD     A,(HL)          ; Consider next variable
+       CP     #80             ; End marker reached?
+       RET    Z               ; If yes, return with carry flag reset
        RRCA
-       OR     (HL)
-       AND    #40
+       OR     (HL)            ; If either bit 6 or 7 are set, it's a numeric
+       AND    #40             ; variable or FN which we don't have to consider
        JR     Z,G_STR
-       CALL   NEXT_ONE
+       CALL   NEXT_ONE        ; Skip to next variable
        JR     G_VAR
-G_STR  LD     E,(HL)
+G_STR  LD     E,(HL)          ; Get first byte of name holding the type bit
        LD     B,#01
-       CPIR
-       BIT    5,E
-       LD     DE,#0001
-       JR     NZ,G_COUNT
+       CPIR                   ; Find the null byte at the end of the name (A=0)
+       BIT    5,E             ; Test the array bit; it's 0 for a string array
+       LD     DE,#0001        ; Initialise DE to 1 for 'simple string'
+       JR     NZ,G_COUNT      ; Jump with simple string variables
+       INC    HL              ; Step past the length bytes of the array
        INC    HL
+       LD     B,(HL)          ; Get number of dimensions
        INC    HL
-       LD     B,(HL)
+G_MULT LD     A,(HL)          ; Get next dimension size (low byte)
        INC    HL
-G_MULT LD     A,(HL)
-       INC    HL
-       PUSH   HL
+       PUSH   HL              ; Save the pointer
        LD     H,(HL)
-       LD     L,A
-       CALL   MULT
-       EX     DE,HL
-       POP    HL
+       LD     L,A             ; HL now holds dimension size
+       CALL   MULT            ; Multiply HL by DE
+       EX     DE,HL           ; Running value to DE
+       POP    HL              ; Retrieve pointer
        INC    HL
-       DJNZ   G_MULT
-G_COUN LD     B,D
-       LD     C,E
-G_ELEM LD     A,(HL)
+       DJNZ   G_MULT          ; Loop back for all dimensions
+G_COUN LD     B,D             ; Total number of array elements goes to BC
+       LD     C,E             ; (or 1 in case of a simple string)
+G_ELEM LD     A,(HL)          ; Get first byte (the absolute/relative flag)
        INC    HL
-       LD     E,(HL)
+       LD     E,(HL)          ; Low byte of address
        INC    HL
-       LD     D,(HL)
-       AND    A
-       JR     NZ,G_NXT1
-       PUSH   HL
-       LD     HL,(STRPTR)
-       SBC    HL,DE
-       JR     NC,G_STRS
-       POP    HL
+       LD     D,(HL)          ; High byte of address
+       AND    A               ; Test the flag (nonzero means relative; we don't
+       JR     NZ,G_NXT1       ; have to consider these so loop back)
+       PUSH   HL              ; Save pointer
+       LD     HL,(STRPTR)     ; Any string above STRPTR has already been
+       SBC    HL,DE           ; considered but if it's below STRPTR there may
+       JR     NC,G_STRS       ; be 'garbage' above it
+       POP    HL              ; Else, retrieve pointer and loop back
        JR     G_NXT1
-G_STRS LD     HL,(STRS)
-       SBC    HL,DE
-       POP    HL
-       JR     NC,G_NXT1
-       RET
+G_STRS LD     HL,(STRS)       ; Check the string's address if it's really in
+       SBC    HL,DE           ; the string space
+       POP    HL              ; Retrieve pointer
+       JR     NC,G_NXT1       ; If not in string space, loop back
+       RET                    ; Else, return carry set (we've found one)
 
-GARBAG XOR    A
+; The main garbage collecting routine
+
+GARBAG XOR    A               ; Signal 'no strings have been moved yet'
+       EX     AF,AF'          ; this flag goes to AF'
+       LD     HL,(23730)      ; Reset STRPTR from RAMTOP - we'll adjust it
+       LD     (STRPTR),HL     ; downwards as we scan the variables area
+
+; The following loop scans the variables area for the longest string with the
+; highest address in the string space area. Any slack space between this string
+; and the running pointer STRPTR is reclaimed and then STRPTR is reset to the
+; base address of this string. When all strings have been considered and all
+; slack space ('garbage') has been reclaimed, an exit is made.
+
+G_LOOP LD     HL,#0000        ; H_AD holds the highest address in use by
+       LD     (H_AD),HL       ; a string - initialise this to zero
+       LD     HL,(23627)      ; get VARS pointer
+       LD     BC,#0001        ; Initialise BC to 1
+G_FETC CALL   G_NEXT          ; Get next string variable or array element
+       JR     NC,G_PTRS       ; Jump forward when no variables left to consider
        EX     AF,AF'
-       LD     HL,(23730)
-       LD     (STRPTR),HL
-G_LOOP LD     HL,#0000
-       LD     (H_AD),HL
-       LD     HL,(23627)
-       LD     BC,#0001
-G_FETC CALL   G_NEXT
-       JR     NC,G_PTRS
+       LD     A,#01           ; Set flag to 1 to signal we're not done yet
        EX     AF,AF'
-       LD     A,#01
-       EX     AF,AF'
-       PUSH   BC
-       INC    HL
-       LD     C,(HL)
+       PUSH   BC              ; Save BC
+       INC    HL              ; HL points to third of five bytes and DE holds
+       LD     C,(HL)          ; the address - now fetch length in BC
        INC    HL
        LD     B,(HL)
-       INC    HL
-       PUSH   HL
-       EX     DE,HL
-       ADD    HL,BC
-       EX     DE,HL
-       LD     HL,(H_AD)
-       SBC    HL,DE
-       JR     Z,G_LEN
-       JR     NC,G_RSTOR
-       LD     HL,#0000
-       LD     (H_LEN),HL
-       EX     DE,HL
-       LD     (H_AD),HL
-G_LEN  LD     HL,(H_LEN)
+       INC    HL              ; Skip to next variable or array element
+       PUSH   HL              ; Save this pointer
+       EX     DE,HL           ; Now HL holds string base address
+       ADD    HL,BC           ; Add length so HL now points past last byte
+       EX     DE,HL           ; this goes to DE
+       LD     HL,(H_AD)       ; Get running highest address
+       SBC    HL,DE           ; Compare against this string's end address
+       JR     Z,G_LEN         ; If equal, consider length of strings
+       JR     NC,G_RSTOR      ; Jump if this string doesn't reach that far
+       LD     HL,#0000        ; Else, initialise H_LEN, which counts the
+       LD     (H_LEN),HL      ; longest string
+       EX     DE,HL           ; Now update H_AD with this string's end address
+       LD     (H_AD),HL       ; (in fact one-past the last byte)
+G_LEN  LD     HL,(H_LEN)      ; Compare H_LEN with current length
        AND    A
        SBC    HL,BC
        JR     NC,G_RSTOR
-       LD     (H_LEN),BC
-G_RSTO POP    HL
-       POP    BC
-       JR     G_FETCH
+       LD     (H_LEN),BC      ; Set H_LEN if current string is longer
+G_RSTO POP    HL              ; Restore VARS pointer
+       POP    BC              ; Restore BC
+       JR     G_FETCH         ; Loop back for next string
+
+; We now have found the longest string with the highest address in the string
+; space. This string needs to be moved 'up' to reclaim any slack space
+; (remember the area expands downwards!) and pointers in the VARS area need to
+; be adjusted accordingly.
 
 G_PTRS EX     AF,AF'
-       DEC    A
-       RET    NZ
-       EX     AF,AF'
-       LD     HL,(H_AD)
-       LD     DE,(STRPTR)
-       LD     BC,(H_LEN)
-       DEC    HL
-       LD     A,B
+       DEC    A               ; Test the flag - if it was zero, all strings
+       RET    NZ              ; have been considered so return.
+       EX     AF,AF'          ; Save flag again for the next turn
+       LD     HL,(H_AD)       ; Highest address in use below STRPTR + 1
+       LD     DE,(STRPTR)     ; First free address
+       LD     BC,(H_LEN)      ; Length of longest reference
+       DEC    HL              ; Step down to last byte of string
+       LD     A,B             ; Sanity check for zero length
        OR     C
        JR     Z,G_ENTER
-       LDDR
-G_ENTE PUSH   DE
+       LDDR                   ; Move the string up
+G_ENTE PUSH   DE              ; Save source and destination
        PUSH   HL
-       EX     DE,HL
-       SBC    HL,DE
-       LD     (H_LEN),HL
-       LD     HL,(23627)
-       LD     BC,#0001
-GP_NXT CALL   G_NEXT
-       JR     NC,G_END
-       EX     (SP),HL
+       EX     DE,HL           ; Find amount of bytes by which it has been
+       SBC    HL,DE           ; moved up
+       LD     (H_LEN),HL      ; Save this in H_LEN
+       LD     HL,(23627)      ; Get VARS pointer
+       LD     BC,#0001        ; Initialise BC
+GP_NXT CALL   G_NEXT          ; Loop again for all string variables
+       JR     NC,G_END        ; Jump when at end of variables
+       EX     (SP),HL         ; Save HL; string's address is in DE
        AND    A
-       SBC    HL,DE
+       SBC    HL,DE           ; Compare against original address in HL
        ADD    HL,DE
-       EX     (SP),HL
-       JR     NC,NO_ADJ
-       PUSH   HL
-       LD     HL,(H_LEN)
-       ADD    HL,DE
-       EX     DE,HL
-       POP    HL
-       LD     (HL),D
+       EX     (SP),HL         ; Swap back
+       JR     NC,NO_ADJ       ; Jump if this variable was below the moved one
+       PUSH   HL              ; Save pointer
+       LD     HL,(H_LEN)      ; Get distance
+       ADD    HL,DE           ; Add this to the string's address
+       EX     DE,HL           ; Swap this to DE
+       POP    HL              ; Retrieve VARS pointer
+       LD     (HL),D          ; Enter the new address
        DEC    HL
        LD     (HL),E
        INC    HL
-NO_ADJ INC    HL
+NO_ADJ INC    HL              ; Step to next variable or array element
        INC    HL
        INC    HL
-       JR     GP_NXT
-G_END  POP    HL
-       POP    HL
-       LD     (STRPTR),HL
-       JP     G_LOOP
+       JR     GP_NXT          ; Loop back
+G_END  POP    HL              ; End of loop - drop original address
+       POP    HL              ; Retrieve destination
+       LD     (STRPTR),HL     ; Set STRPTR accordingly - one below new address
+       JP     G_LOOP          ; Loop back for next scan
 
-FREEME CALL   GARBAGE
-       CALL   #1F1A
-       LD     HL,(STRPTR)
-       LD     DE,(STRS)
+; -----------------------
+; The FREE MEMORY routine
+; -----------------------
+; This routine works similar to the famous '65535-USR 7962' routine but does
+; a bit more - Garbage collect is called first and then the amount of free
+; memory is adjusted for free string space and reduced to allow the creation
+; of one BASICODE tape channel. The routine is used by GOSUB 270 and vectored
+; through the jump table at the start.
+
+FREEME CALL   GARBAGE         ; Do garbage collecting
+       CALL   #1F1A           ; This is 'USR 7962'
+       LD     HL,(STRPTR)     ; Find the amount of free space in the string
+       LD     DE,(STRS)       ; area in HL
        AND    A
        SBC    HL,DE
+       SBC    HL,BC           ; Now perform '65535-USR 7962' but add free
+       EX     DE,HL           ; string space - move this to DE
+       LD     HL,(23635)      ; Find the amount of space occupied by the CHANS
+       LD     BC,(23631)      ; area in HL
        SBC    HL,BC
-       EX     DE,HL
-       LD     HL,(23635)
-       LD     BC,(23631)
+       LD     BC,1043         ; Subtract the size of a BASICODE tape channel
        SBC    HL,BC
-       LD     BC,1043
-       SBC    HL,BC
-       EX     DE,HL
-       JR     NC,FRE_1
-       SBC    HL,BC
-       JR     NC,FRE_1
-       LD     HL,0
-FRE_1  LD     B,H
-       LD     C,L
+       EX     DE,HL           ; Amount of free memory to HL again
+       JR     NC,FRE_1        ; Return this if a tape channel has been opened
+       SBC    HL,BC           ; Else, subtract 1043 so opening a tape channel
+       JR     NC,FRE_1        ; will not change the amount of free memory
+       LD     HL,0            ; returned - but return 0 when 'out of memory'!
+FRE_1  LD     B,H             ; Transfer the result to BC so the USR function
+       LD     C,L             ; call will return it
        RET
 
-H_AD   DEFW   0
+H_AD   DEFW   0               ; Storage for garbage collection routines
 H_LEN  DEFW   0
 
-DIM_1  RST    #20
-DIM    LD     (23647),HL
-       CALL   LOOKVARS
-D_RPC  JP     NZ,#1C8A
-       JR     C,D_LETTER
-       LD     E,B
-       LD     D,#00
-       SBC    HL,DE
-       PUSH   HL
-       CALL   NEXT_ONE
-       POP    DE
-       PUSH   BC
-       CALL   #19E5
+; -----------------------
+; The DIM command handler
+; -----------------------
+; Apart from the fact that array names can have more than one letter, the DIM
+; command differs from the ROM version in three respects:
+;
+; - Since we allow array subscripts starting at zero, the size of a dimension
+;   will be one more than specified in the DIM statement. E.g. DIM A(10) will
+;   create an array of 11 elements.
+; - String arrays consist of strings of dynamic length and only contain
+;   pointers to strings.
+; - The syntax now allows for multiple arrays to be created in one DIM
+;   statement, e.g. DIM A(10),B$(10),C(12,13).
+
+DIM_1  RST    #20             ; Loop-back point for multiple DIMs - skip comma
+DIM    LD     (23647),HL      ; Main entry point - save CH_ADD in X_PTR
+       CALL   LOOKVARS        ; Look up the requested name in VARS area
+D_RPC  JP     NZ,#1C8A        ; Report 'Nonsense in BASIC' if not an array name
+       JR     C,D_LETTER      ; Skip if DIMensioning a new array
+       LD     E,B             ; This code deals with existing arrays which are
+       LD     D,#00           ; re-DIM'd - strictly not allowed in BASICODE!
+       SBC    HL,DE           ; Step back to first letter of name
+       PUSH   HL              ; Save pointer
+       CALL   NEXT_ONE        ; Find next variable in HL
+       POP    DE              ; Retrieve start address
+       PUSH   BC              ; Save BC whilst the existing array is removed
+       CALL   #19E5           ; using RECLAIM-1 subroutine
        POP    BC
 D_LETTER
        LD     H,#00
        LD     L,B
-       LD     (H_LEN),HL
-       LD     B,H
-       PUSH   BC
-       LD     L,#05
-D_SIZE EX     DE,HL
-D_LOOP RST    #20
-       LD     H,#FF
-       CALL   INT_EXP
-       POP    HL
-       INC    BC
-       PUSH   BC
-       INC    H
-       PUSH   HL
-       LD     H,B
+       LD     (H_LEN),HL      ; Save length of name temporarily in H_LEN
+       LD     B,H             ; B counts number of dimensions and is initially
+       PUSH   BC              ; zero, C holds first letter of name and type bit
+       LD     L,#05           ; HL is initially 5 - number of bytes per element
+D_SIZE EX     DE,HL           ; Move HL to DE (Note:label looks redundant here)
+D_LOOP RST    #20             ; Move to next dimension size
+       LD     H,#FF           ; Set HL high - no limit check needed here
+       CALL   INT_EXP         ; Evaluate dimension
+       POP    HL              ; Retrieve dimension counter in H
+       INC    BC              ; Since subscripts start at zero, increment size
+       PUSH   BC              ; by 1 and save it again
+       INC    H               ; Increment number of dimensions
+       PUSH   HL              ; Save this again
+       LD     H,B             ; Transfer current dimension size to HL
        LD     L,C
-       CALL   GET_HL
-       EX     DE,HL
-       RST    #18
-       CP     ","
-       JR     Z,D_LOOP
-       CP     ")"
-       JR     NZ,D_RPC
-       RST    #20
-       POP    BC
-       LD     A,C
-       LD     L,B
+       CALL   GET_HL          ; Multiply this by running number of elements in
+       EX     DE,HL           ; DE and move it to DE again
+       RST    #18             ; Get current character
+       CP     ","             ; A comma indicates that a next dimension follows
+       JR     Z,D_LOOP        ; so loop back
+       CP     ")"             ; If no next dimension, check closing bracket -
+       JR     NZ,D_RPC        ; report 'Nonsense in BASIC' if absent
+       RST    #20             ; Skip past the current character
+       POP    BC              ; Now retrieve number of dimensions in B and
+       LD     A,C             ; save first character of name and type bit in A
+       LD     L,B             ; Transfer number of dimensions to HL
        LD     H,#00
-       INC    HL
-       INC    HL
-       ADD    HL,HL
-       ADD    HL,DE
-       JP     C,#1F15
-       PUSH   DE
-       PUSH   BC
-       LD     BC,(H_LEN)
-       PUSH   HL
-       ADD    HL,BC
-       LD     B,H
-       LD     C,L
-       LD     HL,(23641)
+       INC    HL              ; Four extra bytes are required (name end marker,
+       INC    HL              ; total array size(2), number of dimensions, plus
+       ADD    HL,HL           ; two for each dimension; 2 * (#dimensions + 2)
+       ADD    HL,DE           ; Add the size occupied by all elements
+       JP     C,#1F15         ; Report 'Out of memory' when overflow
+       PUSH   DE              ; Save size of elements
+       PUSH   BC              ; Save dimensions and first name of letter
+       LD     BC,(H_LEN)      ; Get length of name
+       PUSH   HL              ; Save total size excluding name
+       ADD    HL,BC           ; Now add the name length (Note: no overflow
+       LD     B,H             ; check but unlikely to occur)
+       LD     C,L             ; Transfer total size to BC
+       LD     HL,(23641)      ; Make space and the end of VARS
        DEC    HL
-       CALL   #1655
-       INC    HL
-       PUSH   DE
-       EX     DE,HL
-       LD     HL,(23647)
-       LD     (DE),A
-D_CHAR INC    DE
+       CALL   #1655           ; Make room (this will trap any further out of
+       INC    HL              ; memory conditions)
+       PUSH   DE              ; Save pointer to end of space created
+       EX     DE,HL           ; Base address to DE
+       LD     HL,(23647)      ; X_PTR points to requested name
+       LD     (DE),A          ; Set first byte of name
+D_CHAR INC    DE              ; Now copy the other characters of the name
 D_SP   INC    HL
        LD     A,(HL)
        CP     #21
-       JR     C,D_SP
-       OR     #20
+       JR     C,D_SP          ; But ignore any spaces and control codes
+       OR     #20             ; Convert all but first character to lower case
        LD     (DE),A
-       CALL   #2C88
-       JR     C,D_CHAR
-       EX     DE,HL
-       LD     (HL),#00
-       POP    DE
-       POP    BC
-       DEC    BC
-       DEC    BC
-       DEC    BC
+       CALL   #2C88           ; Check for alphanumeric character
+       JR     C,D_CHAR        ; Loop back for all characters of the name
+       EX     DE,HL           ; Swap pointers
+       LD     (HL),#00        ; Set end marker of name
+       POP    DE              ; Retrieve pointer to last byte of array
+       POP    BC              ; Total size excluding name
+       DEC    BC              ; Reduce this by three (exclude the name's end
+       DEC    BC              ; marker and two bytes containing the size of
+       DEC    BC              ; the array
        INC    HL
-       LD     (HL),C
+       LD     (HL),C          ; Set array size
        INC    HL
        LD     (HL),B
-       POP    AF
+       POP    AF              ; Retrieve number of dimensions in A
        INC    HL
-       LD     (HL),A
-       LD     H,D
+       LD     (HL),A          ; Enter number of dimensions
+       LD     H,D             ; Copy end address to HL
        LD     L,E
-       DEC    DE
-       LD     (HL),#00
-       POP    BC
+       DEC    DE              ; Step one byte down
+       LD     (HL),#00        ; Now clear the array's contents by copying the
+       POP    BC              ; zero byte from the end down to the start
        LDDR
-D_SZ   POP    BC
-       LD     (HL),B
+D_SZ   POP    BC              ; For each dimension, retrieve its size in BC
+       LD     (HL),B          ; and enter it into the array's space
        DEC    HL
        LD     (HL),C
        DEC    HL
-       DEC    A
-       JR     NZ,D_SZ
-       RST    #18
-       CP     ","
-       JP     Z,DIM_1
-       RET
+       DEC    A               ; Decrease the dimension counter
+       JR     NZ,D_SZ         ; Loop for all dimensions
+       RST    #18             ; Get current character
+       CP     ","             ; If it's a comma, loop back to handle more
+       JP     Z,DIM_1         ; arrays
+       RET                    ; Done
 
 ; Interrupt service front-end
 ; This is a bodge which re-activates our interpreter after it has been disabled
