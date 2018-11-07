@@ -3062,40 +3062,40 @@ D_SZ   POP    BC              ; For each dimension, retrieve its size in BC
 ; below.
 
 INTSRV PUSH   AF
-       LD     A,(0)         ; check first byte of ROM
-       CP     #F3           ; it is F3 with Spectrum ROM paged in
-       JR     NZ,INTEND
-       PUSH   HL
-       LD     HL,(23613)    ; ERR_SP
-       DEC    HL
-       LD     A,(HL)
+       LD     A,(0)           ; check first byte of ROM
+       CP     #F3             ; it is F3 with Spectrum ROM paged in
+       JR     NZ,INTEND       ; if not, exit early
+       PUSH   HL              ; Save HL
+       LD     HL,(23613)      ; ERR_SP
+       DEC    HL              ; Check address below ERR_SP
+       LD     A,(HL)          ; for $0F3B (ED_LOOP+3)
        CP     #0F
        JR     NZ,NO_ED
        DEC    HL
        LD     A,(HL)
        CP     #3B
-       JR     NZ,NO_ED
-       PUSH   DE
-       LD     DE,ED_LOOP+3
+       JR     NZ,NO_ED        ; Exit if not in ROM's editor
+       PUSH   DE              ; Save DE
+       LD     DE,ED_LOOP+3    ; Replace address with our ED_LOOP+3
        LD     (HL),E
        INC    HL
        LD     (HL),D
        INC    HL
-       LD     DE,ED_ERROR
+       LD     DE,ED_ERROR     ; Also replace ED_ERROR (it's next on the stack)
        LD     (HL),E
        INC    HL
        LD     (HL),D
        INC    HL
+       INC    HL              ; Step past saved address of ERR_SP
        INC    HL
-       INC    HL
-       LD     DE,MAIN_3
+       LD     DE,MAIN_3       ; Next, replace address of MAIN_3
        LD     (HL),E
        INC    HL
        LD     (HL),D
-       POP    DE
+       POP    DE              ; Restore registers
 NO_ED  POP    HL
 INTEND POP    AF
-       JP     #0038         ; go to ROM handler's code
+       JP     #0038           ; Jump to ROM handler's code
 
 ; The interrupt vector itself
 
