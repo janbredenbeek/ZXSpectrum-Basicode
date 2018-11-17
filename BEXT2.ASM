@@ -1054,7 +1054,7 @@ ON_LP  PUSH   AF              ; Save the counter
 ; If there is a valid destination, the following data is pushed onto the GOSUB
 ; stack:
 ;
-; Byte  0  : $EB (GOSUB marker)
+; Byte  0  : $ED (GOSUB marker)
 ; Byte  1  : Statement number after GOSUB
 ; Bytes 2-3: Line number of GOSUB statement
 ; Bytes 4-5: Offset of statement after GOSUB, relative to PROG/E_LINE

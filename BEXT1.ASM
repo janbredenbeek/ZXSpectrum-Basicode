@@ -124,307 +124,336 @@ STRPTR DEFW   #0000           ; Pointer to first used string space
 ; ----------------------------------------------------------
 
 SAVE_ETC
-       POP    BC
+       POP    BC              ; Drop address of SCAN_LOOP
        CALL   SET_PPC         ; Re-enter our interpreter afterwards
        LD     A,(23668)
-       SUB    #E0
-       LD     (23668),A
-       CALL   EX_EXP
-       LD     BC,#0011
+       SUB    #E0             ; Reduce T_ADDR - it's now 0 for SAVE, 1 for LOAD
+       LD     (23668),A       ; 2 for VERIFY and 3 for MERGE
+       CALL   EX_EXP          ; Evaluate the file name
+       LD     BC,#0011        ; Assume 17 bytes of workspace needed
        LD     A,(23668)
        AND    A
-       JR     Z,SA_SPACE
-       LD     C,#22
-SA_SPACE
-       RST    #30
+       JR     Z,SA_SPACE      ; Skip when dealing with SAVE
+       LD     C,#22           ; Other commands require room for 2 headers
+SA_SPACE                      ; (one set by the command and one from the tape)
+       RST    #30             ; Reserve room in WORKSP
        PUSH   DE
-       POP    IX
+       POP    IX              ; Copy address to IX
        LD     B,#0B
        LD     A,#20
-SA_SP  LD     (DE),A
+SA_SP  LD     (DE),A          ; Fill file name with spaces
        INC    DE
        DJNZ   SA_SP
-       LD     (IX+1),#FF
-       CALL   #2BF1
-       LD     HL,#FFF6
-       DEC    BC
-       ADD    HL,BC
-       INC    BC
-       JR     NC,SA_NAME
-       LD     A,(23668)
-       AND    A
-       JP     Z,#0642
-       LD     A,B
+       LD     (IX+1),#FF      ; Signal 'no file name yet'
+       CALL   #2BF1           ; Get string parameters
+       LD     HL,#FFF6        ; This is -10
+       DEC    BC              ; A null name now goes to $FFFF..
+       ADD    HL,BC           ; .. and sets carry, and so will names > 10 chars
+       INC    BC              ; Restore original length
+       JR     NC,SA_NAME      ; Jump if name is 1 to 10 characters in length
+       LD     A,(23668)       ; Test for SAVE command
+       AND    A               ; SAVE must have a valid name,
+       JP     Z,#0642         ; else report 'Invalid file name'.
+       LD     A,B             ; Test for null name
        OR     C
-       JR     Z,SA_SCR$
-       LD     BC,#000A
+       JR     Z,SA_SCR$       ; Skip with null names
+       LD     BC,#000A        ; Else, consider at most 10 characters
 SA_NAME
-       PUSH   IX
-       POP    HL
+       PUSH   IX              ; Valid name given so copy this to the workspace
+       POP    HL              ; area
        INC    HL
        EX     DE,HL
        LDIR
 SA_SCR$
-       RST    #18
-       CP     #AA
-       JR     NZ,SA_CODE
+       RST    #18             ; Get character after name
+       CP     #AA             ; Test for 'SCREEN$' variant
+       JR     NZ,SA_CODE      ; Skip unless dealing with SCREEN$
        LD     A,(23668)
-       CP     #03
+       CP     #03             ; 'MERGE name SCREEN$' is nonsense
        JR     Z,SA_ERR
-       RST    #20
-       LD     (IX+#0B),#00
+       RST    #20             ; Step past SCREEN$ token
+       LD     (IX+#0B),#00    ; Enter length - $1B00 (6912)
        LD     (IX+#0C),#1B
-       LD     HL,#4000
+       LD     HL,#4000        ; Start address - $4000 (16384)
        LD     (IX+#0D),L
        LD     (IX+#0E),H
-       JR     SA_T3
+       JR     SA_T3           ; It's file type 3 (CODE)
 SA_CODE
-       CP     #AF
-       JR     NZ,SA_LINE
+       CP     #AF             ; Test for 'CODE [x,[y]]' variant
+       JR     NZ,SA_LINE      ; Skip unless dealing with 'CODE'
        LD     A,(23668)
-       CP     #03
+       CP     #03             ; 'MERGE name CODE' is nonsense
        JR     Z,SA_ERR
-       RST    #20
-       CALL   #2048
-       JR     NZ,SA_C1
+       RST    #20             ; Step past CODE token
+       CALL   #2048           ; End of statement reached?
+       JR     NZ,SA_C1        ; No, skip
        LD     A,(23668)
-       AND    A
+       AND    A               ; SAVE name CODE must have parameters
        JR     Z,SA_ERR
-       CALL   #1CE6
-       JR     SA_C2
-SA_C1  CALL   EX_1NUM
-       CP     ","
-       JR     Z,SA_C3
+       CALL   #1CE6           ; For LOAD/VERIFY, put a zero on the stack
+       JR     SA_C2           ; Jump for second parameter
+SA_C1  CALL   EX_1NUM         ; Get first CODE parameter, the start address
+       CP     ","             ; Is there a second parameter?
+       JR     Z,SA_C3         ; Yes, consider that
        LD     A,(23668)
-       AND    A
-SA_ERR JP     Z,#1C8A
-SA_C2  CALL   #1CE6
-       JR     SA_C4
-SA_C3  RST    #20
-       CALL   EX_1NUM
-SA_C4  CALL   #1E99
-       LD     (IX+#0B),C
+       AND    A               ; Again, SAVE name CODE must have two parameters
+SA_ERR JP     Z,#1C8A         ; else report 'Nonsense in BASIC'
+SA_C2  CALL   #1CE6           ; For LOAD/VERIFY, stack a zero for length
+       JR     SA_C4           ; Skip next two lines
+SA_C3  RST    #20             ; Advance past the ','
+       CALL   EX_1NUM         ; Evaluate second parameter
+SA_C4  CALL   #1E99           ; Get length (or zero) into BC
+       LD     (IX+#0B),C      ; Store this in header locations 11 and 12
        LD     (IX+#0C),B
-       CALL   #1E99
-       LD     (IX+#0D),C
+       CALL   #1E99           ; Get start address (or zero) into BC
+       LD     (IX+#0D),C      ; Store this in header locations 13 and 14
        LD     (IX+#0E),B
-       LD     H,B
+       LD     H,B             ; Set HL to start address or zero
        LD     L,C
-SA_T3  LD     (IX+0),#03
-       JR     SA_ALL
+SA_T3  LD     (IX+0),#03      ; Set file type to 3 for 'CODE'
+       JR     SA_ALL          ; Now join other paths
 SA_LINE
-       CP     #CA
-       JR     Z,SA_L1
-       CALL   #2048
-       JR     NZ,SA_C
-       LD     (IX+#0E),#80
-       JR     SA_T0
-SA_L1  LD     A,(23668)
-       AND    A
-SA_C   JP     NZ,#1C8A
+       CP     #CA             ; Check for 'LINE x' variant
+       JR     Z,SA_L1         ; Jump with 'LINE'
+       CALL   #2048           ; It's neither of above variants so check end of
+       JR     NZ,SA_C         ; statement, report 'Nonsense in BASIC' otherwise
+       LD     (IX+#0E),#80    ; No start line given so set it to $80xx
+       JR     SA_T0           ; Jump forward to consider file type 0
+SA_L1  LD     A,(23668)       ; LINE has been specified - this variant is only
+       AND    A               ; allowed with SAVE, report 'Nonsense in BASIC'
+SA_C   JP     NZ,#1C8A        ; otherwise
        RST    #20
-       CALL   EX_1NUM
-       CALL   #1E99
-       LD     (IX+#0D),C
+       CALL   EX_1NUM         ; A numeric expression must follow
+       CALL   #1E99           ; Get start line number into BC
+       LD     (IX+#0D),C      ; Store it in header locations 13 and 14
        LD     (IX+#0E),B
-SA_T0  LD     (IX+0),#00
-       LD     HL,(23627)
-       LD     DE,(23635)
-       SBC    HL,DE
-       LD     (IX+#0B),L
-       LD     (IX+#0C),H
-       LD     (IX+#0F),L
-       LD     (IX+#10),H
-       EX     DE,HL
+SA_T0  LD     (IX+0),#00      ; Set file type to 0 for 'BASIC program'
+       LD     HL,(23627)      ; VARS
+       LD     DE,(23635)      ; PROG
+       SBC    HL,DE           ; Get program length in HL (carry reset)
+       LD     (IX+#0B),L      ; Store it in header locations 11/12 and 15/16
+       LD     (IX+#0C),H      ; NOTE: We don't save the variables as they are
+       LD     (IX+#0F),L      ; incompatible with the ROM's BASIC - also, we
+       LD     (IX+#10),H      ; don't store strings in the VARS area anymore!
+       EX     DE,HL           ; HL now points to PROG base
+
+; All the variants have been parsed now and it's time to distinguish SAVE from
+; LOAD, VERIFY and MERGE.
+; HL points to the start address of the block to be SAVEd or loaded.
+
 SA_ALL LD     A,(23668)
-       AND    A
-       JP     Z,#0970
-       PUSH   HL
+       AND    A               ; Are we dealing with SAVE?
+       JP     Z,#0970         ; Yes, let the ROM handle this
+       PUSH   HL              ; Save start address
        LD     BC,#0011
-       ADD    IX,BC
-LD_HD  PUSH   IX
-       LD     DE,#0011
-       XOR    A
-       SCF
-       CALL   #0556
-       POP    IX
-       JR     NC,LD_HD
-       LD     A,#FE
+       ADD    IX,BC           ; Point to second header buffer
+LD_HD  PUSH   IX              ; Save this address
+       LD     DE,#0011        ; A header of 17 bytes is to be looked for
+       XOR    A               ; Signal 'look for header block'
+       SCF                    ; Signal 'load it'
+       CALL   #0556           ; Call the ROM's LOAD/VERIFY block routine
+       POP    IX              ; Restore buffer's address
+       JR     NC,LD_HD        ; Loop back until we got a valid header
+       LD     A,#FE           ; Select stream -2 (channel S)
        CALL   #1601
-       LD     (IY+82),#03
-       LD     C,#80
-       LD     A,(IX+0)
-       CP     (IX-#11)
-       JR     NZ,LD_TYPE
-       LD     C,#F6
+       LD     (IY+82),#03     ; Reset SCR_CT to avoid a 'scroll?' prompt
+       LD     C,#80           ; Signal 'no match yet'
+       LD     A,(IX+0)        ; Now compare type byte of loaded header
+       CP     (IX-#11)        ; to our requested type
+       JR     NZ,LD_TYPE      ; Skip if they do not match
+       LD     C,#F6           ; Else, signal '10 characters to match'
 LD_TYPE
-       CP     #04
-       JR     NC,LD_HD
-       LD     DE,#09C0
+       CP     #04             ; A header type 4 or greater is nonsense,
+       JR     NC,LD_HD        ; loop back
+       LD     DE,#09C0        ; Address of tape messages block in ROM
        PUSH   BC
-       CALL   #0C0A
+       CALL   #0C0A           ; Display the appropriate type message
        POP    BC
-       PUSH   IX
+       PUSH   IX              ; Copy start address of loaded header to DE
        POP    DE
-       LD     HL,#FFF0
+       LD     HL,#FFF0        ; Start of requested file name is 16 bytes before
        ADD    HL,DE
-       LD     B,#0A
+       LD     B,#0A           ; Match 10 characters
        LD     A,(HL)
-       INC    A
-       JR     NZ,LD_NAME
-       LD     A,C
-       ADD    A,B
-       LD     C,A
+       INC    A               ; Skip unless the first byte of the requested
+       JR     NZ,LD_NAME      ; name is $FF, this signals a wildcard
+       LD     A,C             ; C holds -10 when types match or -128 if they
+       ADD    A,B             ; don't - after adding 10 from B it will be >=0
+       LD     C,A             ; when types match regardless of the name
 LD_NAME
-       INC    DE
-       LD     A,(DE)
+       INC    DE              ; This loop compares the characters of the name
+       LD     A,(DE)          ; (case-dependent!)
        CP     (HL)
        INC    HL
        JR     NZ,LD_PR
-       INC    C
-LD_PR  RST    #10
-       DJNZ   LD_NAME
-       BIT    7,C
-       JR     NZ,LD_HD
-       LD     A,#0D
+       INC    C               ; Increment C for each matching character
+LD_PR  RST    #10             ; .. and print each character on the screen
+       DJNZ   LD_NAME         ; Loop for all 10 characters
+       BIT    7,C             ; Bit 7 will be reset now when both type and name
+       JR     NZ,LD_HD        ; match - loop back otherwise
+       LD     A,#0D           ; Follow the name with carriage return
        RST    #10
-       POP    HL
-       LD     A,(IX+0)
+       POP    HL              ; Retrieve start address
+
+; Now split LOAD, VERIFY and MERGE commands.
+
+       LD     A,(IX+0)        ; Are we dealing with 'CODE' variant?
        CP     #03
-       JR     Z,VERIFY
+       JR     Z,VERIFY        ; Yes, skip to ROM handler
        LD     A,(23668)
-       DEC    A
-       JR     Z,LD_CTL
-       CP     #02
-       JP     Z,ME_CTL
-VERIFY JP     #07CB
-LD_CTL PUSH   HL
-       LD     L,(IX+#0B)
+       DEC    A               ; a LOAD command will set the zero flag now
+       JR     Z,LD_CTL        ; Jump with LOAD (BASIC program)
+       CP     #02             ; Check for MERGE
+       JP     Z,ME_CTL        ; Jump with MERGE
+VERIFY JP     #07CB           ; Jump to the ROM with VERIFY and CODE variants
+
+; The following branch handles LOADing of BASIC programs. The BASIC program
+; may have been created either by our BASICODE extension or the ROM's BASIC.
+; In the latter case, the variables and the hidden binary numbers have to be 
+; removed for compatibility with our extension. This is achieved by making an
+; indirect return via the PROGADAPT subroutine.
+
+LD_CTL PUSH   HL              ; Save base address
+       LD     L,(IX+#0B)      ; Fetch 'new' length in HL
        LD     H,(IX+#0C)
-       LD     E,(IX-6)
+       LD     E,(IX-6)        ; And 'old' length in DE
        LD     D,(IX-5)
        SCF
-       SBC    HL,DE
-       JR     C,LD_DATA
-       LD     DE,#0005
+       SBC    HL,DE           ; Find difference between old and new
+       JR     C,LD_DATA       ; Jump if new length is less
+       LD     DE,#0005        ; Else, add 5 bytes overhead
        ADD    HL,DE
-       LD     B,H
+       LD     B,H             ; Move this to BC
        LD     C,L
-       CALL   #1F05
+       CALL   #1F05           ; Call TEST-ROOM which will throw an error if
+                              ; memory is insufficient
 LD_DATA
-       POP    DE
-       LD     HL,(23641)
-       DEC    HL
-       LD     (23647),IX
-       LD     C,(IX+#0B)
+       POP    DE              ; Retrieve base address
+       LD     HL,(23641)      ; E_LINE
+       DEC    HL              ; Step one byte down (the VARS area end marker)
+       LD     (23647),IX      ; Save IX in X_PTR so it will be adjusted when
+       LD     C,(IX+#0B)      ; the area moves and get new length again in BC
        LD     B,(IX+#0C)
        PUSH   BC
-       CALL   #19E5
+       CALL   #19E5           ; Now reclaim the PROG and VARS area
        POP    BC
-       LD     DE,PROGADAPT
+       LD     DE,PROGADAPT    ; Make a return via PROGADAPT (see above heading)
        PUSH   DE
-       PUSH   HL
+       PUSH   HL              ; Save base address in HL and length in BC
        PUSH   BC
-       CALL   #1655
-       LD     IX,(23647)
-       INC    HL
-       LD     C,(IX+#0F)
+       CALL   #1655           ; Now make room for the new program
+       LD     IX,(23647)      ; Pick up (adjusted) pointer to header block
+       INC    HL              ; Point to start of new space
+       LD     C,(IX+#0F)      ; Get length of program in BC
        LD     B,(IX+#10)
-       ADD    HL,BC
-       LD     (23627),HL
-       LD     H,(IX+#0E)
-       BIT    7,H
-       JP     #08A1
+       ADD    HL,BC           ; Add this to base which yields new base of VARS
+       LD     (23627),HL      ; Store new VARS base
+       LD     H,(IX+#0E)      ; High byte of start line - we'll test only the
+       BIT    7,H             ; highest bit since we allow lines up to 32767
+       JP     #08A1           ; Let the ROM handle the rest
 
-ME_CTL LD     C,(IX+#0B)
+; The following code handles MERGE. As with LOAD, the program to be MERGEd may
+; have been created using the ROM's BASIC and so the hidden binary numbers in
+; lines have to be removed before merging. Variables are not MERGEd since they
+; are not compatible with the way we store them.
+
+ME_CTL LD     C,(IX+#0B)      ; Get total length of program+variables into BC
        LD     B,(IX+#0C)
-       PUSH   BC
-       INC    BC
-       RST    #30
-       LD     (HL),#80
-       EX     DE,HL
-       POP    DE
-       PUSH   HL
-       LD     C,(IX+#0F)
+       PUSH   BC              ; Save this
+       INC    BC              ; Allow one extra byte for the end marker
+       RST    #30             ; Reserve this space in WORKSP
+       LD     (HL),#80        ; Terminate it with an end marker
+       EX     DE,HL           ; Second byte of new space to HL
+       POP    DE              ; Retrieve length
+       PUSH   HL              ; Save pointer to new space
+       LD     C,(IX+#0F)      ; Now get length of program only into BC
        LD     B,(IX+#10)
-       PUSH   BC
-       PUSH   HL
+       PUSH   BC              ; Save this
+       PUSH   HL              ; Copy pointer to new space to IX
        POP    IX
-       SCF
-       SBC    A,A
-       CALL   #0802
-       POP    BC
-       POP    HL
-ME_MDV PUSH   HL
+       SCF                    ; Set carry for 'LOAD' (not verify)
+       SBC    A,A             ; Set A to $FF for 'data block'
+       CALL   #0802           ; Load the program block into WORKSP
+       POP    BC              ; Retrieve program length
+       POP    HL              ; and pointer to start of new program
+ME_MDV PUSH   HL              ; Save again
        ADD    HL,BC
-       DEC    HL
-       LD     A,(HL)
-       INC    A
+       DEC    HL              ; Point to last byte of program
+       LD     A,(HL)          ; If it's created by our BASICODE extension, the
+       INC    A               ; last byte will contain $FF - skip if present
        JR     Z,ME_NOW
-       INC    HL
-       LD     (HL),#FF
-       POP    HL
-       PUSH   HL
-       CALL   PA_CR
-ME_NOW POP    HL
-       LD     DE,(23635)
-ME_LP  LD     A,(HL)
-       INC    A
+       INC    HL              ; Else, append it to the program (Note: this will
+       LD     (HL),#FF        ; overwrite either the first byte of its
+       POP    HL              ; variables or the $80 byte added earlier, but we
+       PUSH   HL              ; don't consider them anyway)
+       CALL   PA_CR           ; Remove the program's hidden binary numbers
+ME_NOW POP    HL              ; Retrieve start of new program
+       LD     DE,(23635)      ; Point DE to start of existing program
+ME_LP  LD     A,(HL)          ; Enter a loop to consider all program lines,
+       INC    A               ; exit when the $FF end marker has been reached
        RET    Z
-       LD     B,(HL)
+       LD     B,(HL)          ; Fetch new program's line number into BC
        INC    HL
        LD     C,(HL)
        DEC    HL
-       EX     DE,HL
+       EX     DE,HL           ; Old program's location to HL, new to DE
        PUSH   DE
-       CALL   LN_A_1
+       CALL   LN_A_1          ; Find any existing line number's address in HL
        POP    DE
-       EX     DE,HL
-       CALL   ME_ENTER
-       JR     ME_LP
+       EX     DE,HL           ; Swap pointers back
+       CALL   ME_ENTER        ; Enter new line in program at the right position
+       JR     ME_LP           ; Loop back
+
+; This subroutine merges a new program line into the existing program. On entry
+; the Z flag is set when its line number conflicts with an existing line. In
+; that case, the existing line is deleted first before the new line is entered.
 
 ME_ENTER
-       JR     NZ,ME_E1
-       LD     (23647),HL
-       EX     DE,HL
-       EX     AF,AF'
-       PUSH   HL
+       JR     NZ,ME_E1        ; Skip if no line number conflict
+       LD     (23647),HL      ; Save pointer to new line temporarily
+       EX     DE,HL           ; Swap old and new pointers
+       EX     AF,AF'          ; Save flags register
+       PUSH   HL              ; HL points to existing line
+       INC    HL              ; Step past line number bytes
        INC    HL
-       INC    HL
-       LD     C,(HL)
-       INC    HL
-       LD     B,(HL)
-       INC    HL
-       ADD    HL,BC
-       POP    DE
-       CALL   #19E5
-       EX     DE,HL
-       LD     HL,(23647)
-       EX     AF,AF'
-ME_E1  PUSH   DE
-       EX     AF,AF'
-       INC    HL
-       INC    HL
-       LD     C,(HL)
+       LD     C,(HL)          ; Fetch length into BC
        INC    HL
        LD     B,(HL)
+       INC    HL
+       ADD    HL,BC           ; Point HL past existing line
+       POP    DE              ; Retrieve start of existing line in DE
+       CALL   #19E5           ; Reclaim the existing line
+       EX     DE,HL           ; DE now points to insertion point
+       LD     HL,(23647)      ; Retrieve (possibly updated) pointer to new line
+       EX     AF,AF'          ; Swap flags register back
+ME_E1  PUSH   DE              ; Save destination in DE
+       EX     AF,AF'          ; Save flags register
+       INC    HL              ; Step past line number bytes
+       INC    HL
+       LD     C,(HL)          ; Get line length into BC
+       INC    HL
+       LD     B,(HL)
+       DEC    HL              ; Step back to start of new line
        DEC    HL
        DEC    HL
-       DEC    HL
+       INC    BC              ; Add 4 bytes for line number and length
        INC    BC
        INC    BC
        INC    BC
-       INC    BC
-       JP     #0943
+       JP     #0943           ; Continue into ROM's counterpart, just after the
+                              ; call to NEXT-ONE ($19B8).
 
+; -----------------------------------------------------------------
 ; Test for commands requiring 're-entry' from the ROM's interpreter
+; Called from STMT_LOOP for each statement.
+; -----------------------------------------------------------------
 
 RE_TES CP     #CF             ; Code for CAT
        RET    C               ; Exclude lower codes
        CP     #D5             ; This includes CAT, FORMAT, MOVE, ERASE,
        JR     C,SET_PPC       ; OPEN # and CLOSE #
        CP     #FB             ; Include CLS (because of CLS #)
-       RET    NZ
+       RET    NZ              ; Return with 'safe' codes
 
 ; -----------------------------------------------------------------------------
 ; A command which might cause entry to the ROM of an expansion unit such as
@@ -815,75 +844,88 @@ EXTMSG DEFB   #80
        DEFM   "Not output fil"          ; Report W
        DEFB   "e"+#80
 
-; MAIN-ADD - add new line to BASIC program
+; --------------------------------------------------------------------------
+; MAIN-ADD - add new line to BASIC program.
+; Note: ANY change made to the program will result in deleting ALL variables
+; and user-defined (FN) functions!
+; Sorry folks, but that's the way BASICODE (and other BASICs) work.
+; It's also the reason why there are READ and DATA commands, and if you want
+; to store data on cassette or other media you can use the file handling
+; subroutines 500 to 580.
+; Just be thankful it's not ZX81 BASIC :-)
+; --------------------------------------------------------------------------
 
-MAIN_A LD     (#5C49),BC
-       LD     HL,(23730)
-       LD     (STRPTR),HL
-       LD     HL,(STRS)
-       LD     SP,HL
+MAIN_A LD     (#5C49),BC      ; Save line number in E_PPC
+       LD     HL,(23730)      ; RAMTOP
+       LD     (STRPTR),HL     ; Reset string space
+       LD     HL,(STRS)       ; Base of string space
+       LD     SP,HL           ; Clear the FOR/GOSUB stack
        DEC    HL
        DEC    HL
-       LD     (23613),HL
-       LD     DE,(23627)
-       LD     HL,(23641)
-       DEC    HL
-       CALL   #19E5
-       LD     BC,(#5C49)
-       LD     DE,(#5C5D)
-       LD     HL,REP_G
-       PUSH   HL
-       LD     HL,(#5C61)
-       SCF
-       SBC    HL,DE
-       PUSH   HL
-       CALL   LN_ADDR
-       JR     NZ,MAIN_B
-       PUSH   HL
+       LD     (23613),HL      ; Reset ERR_SP
+       LD     DE,(23627)      ; VARS
+       LD     HL,(23641)      ; E_LINE
+       DEC    HL              ; Leave end marker
+       CALL   #19E5           ; Reclaim variables area
+       LD     BC,(#5C49)      ; Retrieve line number
+       LD     DE,(#5C5D)      ; CH_ADD points after line number digits
+       LD     HL,REP_G        ; Pre-load stack with error report G ('No room
+       PUSH   HL              ; for line') as error return point
+       LD     HL,(#5C61)      ; WORKSP points past end of line
+       SCF                    ; Exclude end marker ($80) byte in E_LINE
+       SBC    HL,DE           ; Find length in HL
+       PUSH   HL              ; Save this
+       CALL   LN_ADDR         ; Now find location in program where line is to
+       JR     NZ,MAIN_B       ; be inserted; jump if no conflicting line exists
+       PUSH   HL              ; Save pointer
+       INC    HL              ; Step past line number bytes
        INC    HL
-       INC    HL
-       LD     C,(HL)
+       LD     C,(HL)          ; Fetch length into BC
        INC    HL
        LD     B,(HL)
        INC    HL
-       ADD    HL,BC
-       POP    DE
-       CALL   #19E5
-MAIN_B POP    BC
+       ADD    HL,BC           ; HL now points past end
+       POP    DE              ; Retrieve start in DE
+       CALL   #19E5           ; Delete existing line from the program
+MAIN_B POP    BC              ; Retrieve new line's length in BC
        LD     A,C
-       DEC    A
-       OR     B
-       JR     Z,MAIN_C
-       PUSH   BC
+       DEC    A               ; An empty line (just line number+CR) will now
+       OR     B               ; set the zero flag
+       JR     Z,MAIN_C        ; .. which just deletes a single line, so skip
+       PUSH   BC              ; Save original length
+       INC    BC              ; Add 4 bytes for the line number and length
        INC    BC
        INC    BC
        INC    BC
-       INC    BC
-       DEC    HL
+       DEC    HL              ; Point HL before insertion point
        LD     DE,(#5C53)
-       PUSH   DE
-       CALL   #1655
-       POP    HL
-       LD     (#5C53),HL
-       POP    BC
+       PUSH   DE              ; Save original PROG pointer
+       CALL   #1655           ; Make room for new line
+       POP    HL              ; Restore original PROG pointer (it may have been
+       LD     (#5C53),HL      ; moved when adding a first line).
+       POP    BC              ; Get a copy of original length
        PUSH   BC
-       INC    DE
-       LD     HL,(#5C61)
-       DEC    HL
-       DEC    HL
-       LDDR
-       LD     HL,(#5C49)
-       EX     DE,HL
-       POP    BC
-       LD     (HL),B
+       INC    DE              ; Point DE to last byte of new space
+       LD     HL,(#5C61)      ; Get WORKSP pointer
+       DEC    HL              ; The last (CR) byte of the new line in E_LINE
+       DEC    HL              ; is two bytes down
+       LDDR                   ; Now copy the new line to it's place in PROG
+       LD     HL,(#5C49)      ; Fetch line number again
+       EX     DE,HL           ; HL now points to last of 4 extra bytes at start
+       POP    BC              ; Retrieve length
+       LD     (HL),B          ; Enter length - MSB after LSB in memory
        DEC    HL
        LD     (HL),C
        DEC    HL
-       LD     (HL),E
+       LD     (HL),E          ; Enter line number - LSB after MSB in memory
        DEC    HL
        LD     (HL),D
-MAIN_C POP    AF
-       JP     MAIN_EXEC
+MAIN_C POP    AF              ; Drop address of REP_G
+       JP     MAIN_EXEC       ; and loop back to main execution loop
+
+; This subroutine is called after LN_ADDR with DE pointing to the current line
+; and HL to the line after.
+
 LN_NO1 EX     DE,HL
        LD     DE,#168F
 LN_NO  LD     A,(HL)
