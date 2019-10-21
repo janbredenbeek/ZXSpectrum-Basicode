@@ -24,7 +24,7 @@ Also, I managed to find the entire source code of my project from the '80s. It's
 
 This story was written in 2016, and in the three years since there have been some developments. All BASICODE-2 and BASICODE-3 programs which have been aired are now available in ASCII form at [Rob Hagemans's BASICODE archive](https://github.com/robhagemans/basicode). The object and source code of my latest BASICODE-3 translator program, which has now been documented to a large extent, is available [here](https://github.com/janbredenbeek/ZXSpectrum-Basicode).
 
-If you want to run BASICODE programs from this archive, the easiest way will probably be through Rob's [BASICODE Interpreter](https://github.com/robhagemans/basicode-interpreter). Alternatively, you can use my [BASICODE-3 translator for the Sinclair QL](https://github.com/janbredenbeek/QL-Basicode) which can read and translate BASICODE programs directly from ASCII files (unlike the Spectrum's interpreter, it can run at 2019-like speeds when using an emulator such as QPC2).
+If you want to run BASICODE programs from this archive, the easiest way will probably be through Rob's [online BASICODE Interpreter](http://robhagemans.github.io/basicode). Alternatively, you can use my [BASICODE-3 translator for the Sinclair QL](https://github.com/janbredenbeek/QL-Basicode) which can read and translate BASICODE programs directly from ASCII files (unlike the Spectrum's interpreter, it can run at 2019-like speeds when using an emulator such as QPC2).
 
 
 Have fun,
