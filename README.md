@@ -15,6 +15,8 @@ The source code is divided into six parts:
 
 Unless otherwise stated, all parts are written in Z80 Assembly. The original code was written for the Hisoft Devpac assembler and, because of tight memory constraints, hardly documented. No use has been made of macros and very little use of special assembler directives so it should not be too difficult to port this to another platform.
 
+For a more technical description, please read the [Description.rst](https://github.com/janbredenbeek/ZXSpectrum-Basicode/blob/master/Description.rst) file.
+
 I don't own a ZX Spectrum anymore but have successfully tested the program on various emulators such as Spectaculator, Fuse and EightyOne, despite the huge dependency on the original ZX Spectrum ROM and accurate CPU timing. As for the latter, Spectaculator is my preferred choice. It can also read in BASICODE programs saved as 8-bit .WAV files at high speed. You must set it to emulate the 48K Spectrum though as the program does not currently work in 128K mode.
 
 ## Instructions for use
