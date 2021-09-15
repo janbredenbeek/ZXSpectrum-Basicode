@@ -1380,12 +1380,12 @@ LDBLOC DI
        AND    #20
        OR     #02
        LD     C,A		; initialise state of EAR bit in C
-       CP     A
-LD_BRK JR     NZ,LDQUIT
-LD_FRS CALL   EDGE1
-       JR     NC,LD_BRK
+       CP     A                 ; zero flag initially set
+LD_BRK JR     NZ,LDQUIT         ; zero flag reset signals 'BREAK pressed'
+LD_FRS CALL   EDGE1             ; look for a pulse
+       JR     NC,LD_BRK         ; loop if not found
        LD     DE,#0415
-LD_WAI DJNZ   LD_WAIT	; Now wait 1 second
+LD_WAI DJNZ   LD_WAIT           ; Now wait 1 second
        DEC    DE
        LD     A,D
        OR     E
@@ -1394,15 +1394,22 @@ LD_WAI DJNZ   LD_WAIT	; Now wait 1 second
        JR     NC,LD_BRK
 	   
 ; Now wait for a leader tone of 2400 Hz
+; Note: the EDGE1 ROM routine takes 458 T-states, after which B increases 
+;       by 1 per 58 T-states while looking for a single 'edge' (transition).
+;       For EDGE2, this is 916 T-states and B increases by 1 per 58 T-states
+;       while looking for two edges (a complete period)
+;       A 0-bit is two times 1458 T-states, and a 1-bit 4 times 729 T-states
+;       Hence, after calling EDGE2 B will have increased by 34 for a 0-bit
+;       and by 9 for the first period of a 1-bit.
 	   
-LD_LEA LD     B,240
+LD_LEA LD     B,240             ; Two edges must be found within 1844 T-states
        CALL   EDGE2
-       JR     NC,LD_BRK
+       JR     NC,LD_BRK         ; if not, loop back
        LD     A,B
        CP     246
        JR     C,LD_FRST
        INC    D
-       JR     NZ,LD_LEAD
+       JR     NZ,LD_LEAD        ; at least 255 periods must be found
 	   
 ; Leader tone found, now wait for first byte (82H for program blocks, 81H for data blocks)
 	   
@@ -1454,90 +1461,95 @@ LDBUFF CALL   #053F		; Tidyup and test for BREAK
 
 ; This loop waits for a zero start bit
 	   
-LDBR_1 JR     NZ,LDQUIT	; Jump if BREAK pressed
-LD_ONE LD     B,190		; else, try to sync on a start bit
+LDBR_1 JR     NZ,LDQUIT         ; entry point after an error; jump with BREAK
+LD_ONE LD     B,190             ; else, try to sync on a start bit
        CALL   EDGE1
-       JR     NC,LDBR_1	; loop back if no valid pulse found
+       JR     NC,LDBR_1         ; loop back if no valid pulse found
        LD     A,B
        CP     201
-       JR     NC,LD_ONE			; 
+       JR     NC,LD_ONE
+
+; This entry point is called when awaiting the first byte
+; (after the leader tone, or when recovering from an error)
+
 LDSYNC LD     B,190
-       CALL   EDGE1
+       CALL   EDGE1             ; look for a single edge
        JR     NC,LDBR_1
        LD     A,B
-       CP     201
-       JR     C,LDSYNC
-       CALL   EDGE1
+       CP     201               ; still a '1' bit?
+       JR     C,LDSYNC          ; yes, loop back
+       CALL   EDGE1             ; look for second edge
        JR     NC,LDBR_1
        LD     A,B
-       CP     211
-       JR     C,LDSYNC
-       JR     LD_MARKER
+       CP     211               ; is it a complete '0' period?
+       JR     C,LDSYNC          ; no, loop back
+       JR     LD_MARKER         ; else, proceed to get first byte
 
 ; Load one byte into E and update checksum in D
 	   
-LDBYTE LD     E,0		; Wait for start bit
-LDBYT1 DEC    E		; Count number of passes
-       RET    Z		; if no start bit in 255 passes, end reached (carry set)
-       LD     B,190
-       CALL   EDGE2
-       JR     NC,LDBR_1
-       LD     A,B
-       CP     211
-       JR     C,LDBYT1
+LDBYTE LD     E,0		; wait for start bit
+LDBYT1 DEC    E                 ; count number of passes
+       RET    Z	                ; if no start bit in 255 passes, end reached (carry set)
+       LD     B,190             ; two edges must be found within approx. 4600 T-states
+       CALL   EDGE2             ; collect two edges (complete period)
+       JR     NC,LDBR_1         ; jump if BREAK or other error
+       LD     A,B               ; get counter (it will be about 224 for a 0-bit
+       CP     211               ; and 199 for a 1-bit).
+       JR     C,LDBYT1          ; loop back unless a 0 (start bit) found
 LD_MAR LD     E,#80		; Set marker bit in E (LSB goes first)
 
 ; This loop reads in a byte bit by bit
 
-LD_BIT LD     B,190
-       CALL   EDGE2
-       JR     NC,LDBR_1	; Jump if BREAK pressed or other error
-       LD     A,B
-       CP     211
-       JR     NC,LD_ROT
+LD_BIT LD     B,190             ; set timout to about 4600 T-states
+       CALL   EDGE2             ; collect a complete period of tape signal
+       JR     NC,LDBR_1         ; jump if BREAK pressed or other error
+       LD     A,B               ; get counter
+       CP     211               ; match up against time constant
+       JR     NC,LD_ROT         ; long period means 0-bit, skip second period
        LD     B,240
-       CALL   EDGE2
-       JR     NC,LDBR_1
-LD_ROT RR     E
-       JR     NC,LD_BIT
+       CALL   EDGE2             ; else, collect another period of 1-bit
+       JR     NC,LDBR_1         ; and trap errors
+LD_ROT RR     E                 ; now shift in new bit
+       JR     NC,LD_BIT         ; loop until marker bit shifts out
        LD     A,D
-       XOR    E
+       XOR    E                 ; update checksum byte
        LD     D,A
        RET
 	   
 ; Display character read in from tape on bottom line of screen during loading.
-; This routine does not scroll but wraps back to start of bottom line
+; This routine does not scroll but wraps back to start of bottom line for speed
+; The character to be printed is in A, with bit 7 already stripped
 	   
-DISP_C PUSH   HL
+DISP_C PUSH   HL                ; save registers
        PUSH   DE
        PUSH   BC
-       CP     #0D
+       CP     #0D               ; replace CR by space (really needed?)
        JR     NZ,CKCTRL
-       LD     A,#20
+       LD     A,#20             ; (one could save 6 bytes here)
 CKCTRL CP     #20
        JR     NC,BASCALC
-       LD     A,"#"
+       LD     A,"#"             ; replace any control code by '#'
 BASCAL LD     H,0
        LD     L,A
        ADD    HL,HL
        ADD    HL,HL
-       ADD    HL,HL
-       LD     BC,#3C00
-       ADD    HL,BC
-       LD     DE,(SCR_AD)
+       ADD    HL,HL             ; multiply code by eight
+       LD     BC,#3C00          ; original Spectrum charset - 256
+       ADD    HL,BC             ; point at character image
+       LD     DE,(SCR_AD)       ; get current position in display file
        PUSH   DE
-       LD     B,8
-PR_LIN LD     A,(HL)
+       LD     B,8               ; eight rows to be printed
+PR_LIN LD     A,(HL)            ; now copy the character image
        LD     (DE),A
-       INC    L
-       INC    D
+       INC    L                 ; next character row
+       INC    D                 ; next row in display file
        DJNZ   PR_LINE
-       POP    HL
-       INC    L
+       POP    HL                ; get current position
+       INC    L                 ; move to next
        LD     A,L
-       OR     #E0
+       OR     #E0               ; keep same row at bottom of screen
        LD     L,A
-       LD     (SCR_AD),HL
+       LD     (SCR_AD),HL       ; update position
        POP    BC
        POP    DE
        POP    HL
