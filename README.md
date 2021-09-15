@@ -30,19 +30,22 @@ When the whole BASICODE program has been loaded, you will either be returned to 
 ### Loading BASICODE programs from an ASCII file
 Many BASICODE programs published over the years are now available as ASCII files in the BASICODE repository. Using an emulator, these files may be imported into the BASICODE translator program by loading them into the Spectrum's memory as binary data files. To successfully do this, the following conditions must be observed:
 
-- Lines in the ASCII program must be terminated with either a CR or CR+LF character (the translator program will ignore LFs). In addition, the file should start with a STX character (with bit 7 set, so Hex 82 or CHR$ 130) and end with an ETX character (also bit 7 set, so Hex 83 or CHR$ 131). These markers define the begin and end of the program. If the file doesn't contain these characters, you may POKE them into memory afterwards.
+- Lines in the ASCII program must be terminated with a CR character (the translator program currently doesn't process LF or CR+LF correctly). In addition, the file should start with a STX character (with bit 7 set, so Hex 82 or CHR$ 130) and end with an ETX character (also bit 7 set, so Hex 83 or CHR$ 131). These markers define the begin and end of the program. If the file doesn't contain these characters, you may POKE them into memory afterwards.
 
-- The file must be loaded into the Spectrum's free memory area, starting at a location at least 100 bytes above STKEND, and must not extend into the memory reserved for the translator program, which is above location 53950 (you should leave at least 100 bytes free below this as the machine stack resides here). Any existing program above line 1000 must have been deleted first (invoking the \*L menu option followed by BREAK will do this). In practice, the maximum size of the raw BASICODE program will be about 27K bytes on the standard 48K Spectrum.
+- The file must be loaded into the Spectrum's free memory area, starting at a location at least 100 bytes above STKEND, and must not extend into the memory reserved for the translator program, which is above location 53950 (you should leave at least 100 bytes free below this as the machine stack resides here). Any existing program above line 1000 must have been deleted first (invoking the \*L menu option followed by BREAK will do this). In practice, the size of the raw BASICODE program must be no greater than about 27K bytes on the standard 48K Spectrum.
 
-- The start address of the file must be POKEd into the locations 55791 (low byte) and 55792 (high byte). If you enter a BASICODE load command (\*L) first and then BREAK out of the loader, locations 55791 and 55792 will already have been set correctly and entering 'PRINT PEEK 55791+256\*PEEK 55792' will display the start address to be used. At this location, there should be a STX (CHR$ 130) character. If the file doesn't contain this character, you should load it at one location higher and POKE 130 into the start address.
+- The start address of the file must be POKEd into the locations 55791 (low byte) and 55792 (high byte). If you enter a BASICODE load command (\*L) first and then BREAK out of the loader, the locations will already have been set correctly and entering 'PRINT PEEK 55791+256\*PEEK 55792' will display the start address to be used. At this location, there should be a STX (CHR$ 130) character. If the file doesn't contain this character, you should load it at one location higher and POKE 130 into the start address.
+**Note**: The locations 55791 and 55792 are valid for version 4.0. For version 3.1, the locations to POKE will be 55773 and 55774 respectively, and for version 1.0 56405 and 56406.
 
 - It is very important that the ETX marker (Hex 83, CHR$ 131) is present at the end of the program in memory. Failure to do so will result in rubbish being imported after the program when translating to BASIC!
+
+If your BASICODE file doesn't have the proper line termination and/or STX/ETX characters, you can use a good text editor such as Notepad++ to reformat it. For example, to change the line termination from CR+LF to CR, choose in the Edit menu the option EOL Conversion -> CR (Macintosh). STX and ETX characters may be added to the beginning and end of the file by typing ALT-0130 and ALT-0131 respectively (hold down ALT while typing the digits). Be sure to change the Encoding menu option from UTF-8 to ANSI or you'll end up with the wrong codes!
 
 As an example, you must take the following steps to import a BASICODE program from an ASCII text file into the Spectrum:
 
 1. Enter '\*L', then use BREAK to exit from the loader. This will delete any existing program above line 1000.
 
-2. Enter the command **PRINT PEEK 55791+256\*PEEK 55792**. Note the address, it will usually be around 26000 to 27000.
+2. Enter the command **PRINT PEEK 55791+256\*PEEK 55792** (for v4.0, other versions see note above). Note the address, it will usually be around 26000 to 27000.
 
 3. Use the 'load binary file into memory' feature of your emulator to load the BASICODE program at the start address. On Spectaculator, you should choose File -> Open, then select the option 'Z80 Machine code (.raw,.bin) in the drop-down box right to the file name (You probably have to rename the file to something ending in .raw or .bin first. Do **NOT** check the box 'Execute after import'!).\
 On Fuse, you can use the menu option File -> Load binary data. Enter the start address in the dialog box following.\
@@ -50,7 +53,6 @@ On Fuse, you can use the menu option File -> Load binary data. Enter the start a
 
 4. If the file you've loaded into memory ends with an ETX character (Hex 83 or CHR$ 131), you may continue to the next chapter. If not, you have to work out where it ends in memory. You need the *exact* length, not just the simplified '12KB' or so that Windows Explorer tells you (if it does at all). Right-click and look at 'Properties' which tells you the exact length. If you use Fuse, you don't have to go to this hassle since it will tell you the length of the file after you selected it in the 'Load binary data' dialog.\
 Now add the length of the file to the address where you just loaded it. E.g. when you've loaded it at 27001 (allowing for POKE 27000,130 above) and the file is 12350 bytes, then you should enter **POKE 27001+12350,131** (yes, I'm too lazy to work out the address by hand!).\
-**Note**: It may often be more convenient to patch the ETX character into the file itself rather than working out where to POKE it. A simple way to do this from Windows is to open a Command prompt, CD to the directory where the file resides and enter the command **echo \<alt-131\> >> file.txt**, where \<alt-131\> is obtained by holding down the ALT key while typing 131 on the numeric keypad (be sure to have NumLock on). It will display as a single character (usually an accented a or the Dutch Gulden sign). Trying to enter it using a text editor will probably not give the desired result since they usually encode it using UTF-8 rather than ANSI or extended ASCII...
 
 ### LISTing the BASICODE program (*K, *P)
 Using the \*K menu option, you may inspect the BASICODE program loaded into memory. Version 4 and later also allow you to send the listing to the printer channel using the \*P option (for this, you need to have OPENed stream #3 to a suitable device beforehand). If this option does nothing, you probably have made a mistake in the previous chapter's procedure (the location pointed to by PEEK 55791+256\*PEEK 55792 must contain a STX (CHR$ 130) character for this to work). If you see rubbish displayed after the program, it isn't properly terminated by an ETX (CHR$ 131) character (see previous chapter to correct this).\
@@ -72,6 +74,10 @@ The file I/O subroutines at line 500 to 590 and 950 to 980 use some awkward synt
 
 Unlike ZX BASIC, this extended interpreter does NOT check the syntax of a BASIC line on entry. You will usually get a 'Nonsense in BASIC' report when there is a syntax error. I do not consider this a great loss since its main use is to run BASICODE programs which have already been written. If you do get 'Nonsense in BASIC' when running a BASICODE program, check the corresponding line for errors (mostly caused by improper use of separators in PRINT statements, e.g. PRINT "The value of A is"A ) and manually correct it.
 
+The BASICODE extension stores variables in a different way than ZX BASIC. As a consequence, variables are not saved along with the program and you cannot save them using SAVE..DATA. BASICODE-3 has provisions for storing data using the subroutines 500 to 580, which can be used for storing and retrieving data in a sequential way, using BASICODE tape format or microdrive/floppy emulation (depending on the value of NF, for NF>=2 the subroutines work as-is on a Interface-1 compatible storage system).
+
+If you make any changes to the BASIC program, all variables will be cleared.
+
 ### Converting a BASIC program to BASICODE (*C)
 This does the opposite of the \*T command. A BASICODE-compliant program is converted from the Spectrum to BASICODE. 
 
@@ -89,7 +95,9 @@ You must observe the rules laid out in the BASICODE-3 protocol. Only the keyword
 
 - BASIC lines generated by the conversion may not be longer than 60 characters. A warning message is given if a line is found to be too long.
 
-Once you have successfully converted the program, it may be viewed using the \*K command and sent to a printer or another device using the \*P command. It may be written to a (virtual) tape device using the \*W command (see below)
+Once you have successfully converted the program, it may be viewed using the \*K command and sent to a printer or another device using the \*P command. It may be written to a (virtual) tape device using the \*W command (see below).
+
+**CAUTION**: Be sure to SAVE the program first before using this command. If there is no room for both the original and translated BASICODE program, the translation process will first delete the already translated part of the original program, and display the message 'BASIC PROGRAM OVERWRITTEN' (it is then still available in translated form). If, after this operation, there is still not enough memory left, an 'Out of memory' error is thrown and you will have lost everything!
 
 ### Writing a program in BASICODE to tape or .WAV file (*W)
 This will be self-explanatory when you have a real Spectrum and a tape recorder. However, when using an emulator, you will be used to 'virtual' tape recorders and .TAP or .TZX files.
